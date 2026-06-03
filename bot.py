@@ -199,45 +199,49 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
         log.warning("RENORMALIZE_API_KEY not set — using mock data")
         return _mock_hours()
 
-    date_str = target_date.isoformat()
-    results:  dict[str, float] = {}
+    results: dict[str, float] = {}
+    month_start = target_date.replace(day=1)
+    prev_day    = target_date - timedelta(days=1)
 
-    import httpx  # local import — already in requirements.txt
+    import httpx
 
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
 
         for name, _en, daily, _ in TEAM:
             renorm_id = RENORMALIZE_IDS.get(name)
-
             if renorm_id is None:
                 hours = random.gauss(daily, 1.5)
                 results[name] = round(max(0.0, min(daily + 2, hours)), 2)
                 continue
 
             try:
-                # Boss confirmed: pull from month start to target date
-                month_start = target_date.replace(day=1).isoformat()
-                resp = await client.get(
-                    "https://api.renormalize.com/v1/time/progression",
-                    params={
-                        "user_ids": str(renorm_id),
-                        "start_at": month_start,
-                        "end_at":   date_str,
-                    },
-                    headers=headers,
-                    timeout=15,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                log.info("Renormalize OK for %s: %s", name, str(data)[:200])
+                # Strategy: total(month→target) − total(month→prev_day) = hours on target_date
+                # This avoids relying on the date field in API entries (which may use a different TZ).
 
-                total_seconds = _extract_seconds(data, date_str, renorm_id)
-                results[name] = round(total_seconds / 3600, 2)
+                async def _fetch_total(start: date, end: date) -> float:
+                    if start > end:
+                        return 0.0
+                    r = await client.get(
+                        "https://api.renormalize.com/v1/time/progression",
+                        params={"user_ids": str(renorm_id),
+                                "start_at": start.isoformat(),
+                                "end_at":   end.isoformat()},
+                        headers=headers,
+                        timeout=15,
+                    )
+                    r.raise_for_status()
+                    return _sum_entries(r.json(), renorm_id)
+
+                total_to_date = await _fetch_total(month_start, target_date)
+                total_to_prev = await _fetch_total(month_start, prev_day) if prev_day >= month_start else 0.0
+
+                day_seconds = max(0.0, total_to_date - total_to_prev)
+                results[name] = round(day_seconds / 3600, 2)
+                log.info("%s on %s: %.2fh (%.0fs)", name, target_date, results[name], day_seconds)
 
             except httpx.HTTPStatusError as exc:
-                log.error("Renormalize %s for %s (id=%s): %s",
-                          exc.response.status_code, name, renorm_id, exc.response.text[:200])
+                log.error("Renormalize %s for %s: %s", exc.response.status_code, name, exc.response.text[:100])
                 results[name] = 0.0
             except Exception as exc:
                 log.exception("fetch_hours failed for %s: %s", name, exc)
@@ -246,55 +250,12 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
     return results
 
 
-def _extract_seconds(data: dict, date_str: str, user_id: Optional[int] = None) -> float:
-    """
-    Extract total worked seconds from a Renormalize API response.
-
-    /v1/time/progression returns:
-      {"USER_ID": [{"date":"YYYY-MM-DD", "total_time":<sec>, "time_start":"...", "time_end":"...", ...}]}
-
-    /charts/time-use-report returns (fallback):
-      {"data": [{"time_by_date": [{"date":"...", "total_auto_time":<sec>, "total_manual_time":<sec>}]}]}
-    """
-    # ── /v1/time/progression format ──────────────────────────────────────────
-    if user_id is not None:
-        key     = str(user_id)
-        entries = data.get(key, [])
-        if isinstance(entries, list) and entries:
-            # Sum total_time for all entries on the target date
-            total = sum(e.get("total_time", 0) for e in entries if e.get("date") == date_str)
-            if total > 0:
-                return float(total)
-
-            # Fallback: compute from time_start / time_end timestamps
-            from datetime import datetime as _dt
-            computed = 0.0
-            for e in entries:
-                if e.get("date") != date_str:
-                    continue
-                try:
-                    ts = _dt.fromisoformat(str(e["time_start"]).replace(" ", "T"))
-                    te = _dt.fromisoformat(str(e["time_end"]).replace(" ", "T"))
-                    diff = (te - ts).total_seconds()
-                    if diff > 0:
-                        computed += diff
-                except (KeyError, ValueError, TypeError):
-                    pass
-            if computed > 0:
-                return computed
-
-    # ── /charts/time-use-report format ──────────────────────────────────────
-    if isinstance(data.get("data"), list):
-        total = 0.0
-        for task in data["data"]:
-            for day in task.get("time_by_date", []):
-                if day.get("date") == date_str:
-                    total += day.get("total_auto_time", 0) + day.get("total_manual_time", 0)
-        if total > 0:
-            return total
-
-    log.warning("_extract_seconds: no time found in response. Shape: %s", str(data)[:200])
-    return 0.0
+def _sum_entries(data: dict, user_id: int) -> float:
+    """Sum all total_time seconds for a user in the API response (no date filter)."""
+    return float(sum(
+        e.get("total_time", 0)
+        for e in data.get(str(user_id), [])
+    ))
 
 
 async def fetch_week_hours(week_begin: date) -> dict[str, float]:
