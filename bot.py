@@ -219,18 +219,17 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
                 resp = await client.get(
                     "https://api.renormalize.com/v1/time/progression",
                     params={
-                        "user_id":    renorm_id,
-                        "start_date": date_str,
-                        "end_date":   date_str,
+                        "user_ids": str(renorm_id),
+                        "start_at": date_str,
+                        "end_at":   date_str,
                     },
                     headers=headers,
                     timeout=15,
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                log.debug("Renormalize response for %s: %s", name, str(data)[:300])
+                log.info("Renormalize OK for %s: %s", name, str(data)[:200])
 
-                # Response shape TBD — try several known formats
                 total_seconds = _extract_seconds(data, date_str)
                 results[name] = round(total_seconds / 3600, 2)
 
@@ -728,28 +727,22 @@ async def cmd_test_api(ctx: commands.Context) -> None:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
         base    = "https://api.renormalize.com/v1/time/progression"
 
-        # Try different array formats for user_ids
+        # Correct format: user_ids (string) + start_at + end_at
         attempts = [
-            # 1. user_ids[]=ID  (PHP/Rails array style)
-            (base, [("user_ids[]", test_id), ("start_date", date_str), ("end_date", date_str)]),
-            # 2. user_ids=ID,ID  (comma-separated)
-            (base, {"user_ids": str(test_id), "start_date": date_str, "end_date": date_str}),
-            # 3. user_ids as list via httpx list params
-            (base, [("user_ids", test_id), ("start_date", date_str), ("end_date", date_str)]),
-            # 4. No dates — maybe endpoint returns all data for a user
-            (base, [("user_ids[]", test_id)]),
+            {"user_ids": str(test_id), "start_at": date_str, "end_at": date_str},
+            {"user_ids": str(test_id), "start_at": date_str, "end_at": date_str, "entity_type": "engineer"},
         ]
 
-        for url, params in attempts:
+        for params in attempts:
             try:
-                resp = await client.get(url, params=params, headers=headers, timeout=10)
+                resp = await client.get(base, params=params, headers=headers, timeout=10)
                 results.append(
                     f"**Params:** `{params}`\n"
                     f"**Status:** {resp.status_code}\n"
-                    f"**Body:** ```{resp.text[:500]}```"
+                    f"**Body:** ```{resp.text[:800]}```"
                 )
                 if resp.status_code == 200:
-                    break  # found working format
+                    break
             except Exception as exc:
                 results.append(f"**Params:** `{params}`\n**Error:** {exc}")
 
