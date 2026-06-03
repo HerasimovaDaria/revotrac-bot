@@ -10,6 +10,7 @@ Commands:
   !report         — trigger your personalized morning report right now
   !dayoff [DD.MM] — open day-off selector for a specific date (PM only)
   !weekly         — show current-week progress for your subscribed members
+  !findmembers    — list all Renormalize workspace members with their IDs (PM only)
 """
 
 import asyncio
@@ -61,6 +62,19 @@ TEAM: list[tuple[str, float, float]] = [
 MEMBER_NAMES   = [m[0] for m in TEAM]
 DAILY_TARGET:  dict[str, float] = {m[0]: m[1] for m in TEAM}
 WEEKLY_TARGET: dict[str, float] = {m[0]: m[2] for m in TEAM}
+
+# Renormalize user IDs — найти их можно командой !findmembers
+# или вручную: открой отчёт сотрудника в Renormalize, ID в URL: ?id=XXXXX
+RENORMALIZE_IDS: dict[str, Optional[int]] = {
+    "Лёша Седин":          None,   # TODO: вставь ID
+    "Лёша Думалин":        None,   # TODO: вставь ID
+    "Самвел":              76632,
+    "Андрей Соколовский":  None,   # TODO: вставь ID
+    "Давид":               None,   # TODO: вставь ID
+    "Георгий":             None,   # TODO: вставь ID
+    "Сергей Безруков":     None,   # TODO: вставь ID
+    "Станислав Селиванов": None,   # TODO: вставь ID
+}
 
 # ---------------------------------------------------------------------------
 # Data layer — SQLite
@@ -156,34 +170,84 @@ def week_start(d: date) -> date:
 # Hours data source
 # ---------------------------------------------------------------------------
 
-async def fetch_hours(target_date: date) -> dict[str, float]:
-    """
-    Return hours worked by each team member on *target_date*.
-    Currently returns MOCK data (gaussian noise around each person's daily target).
-
-    ── REAL RENORMALIZE API ────────────────────────────────────────────────
-    Replace the body below with something like:
-
-        import httpx
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                "https://api.renormalize.example/v1/hours",
-                params={"date": target_date.isoformat()},
-                headers={"Authorization": f"Bearer {RENORMALIZE_API_KEY}"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            return resp.json()   # expected: {"member_name": hours_float, ...}
-    ────────────────────────────────────────────────────────────────────────
-    """
-    await asyncio.sleep(0)  # keeps the function truly async
-
+def _mock_hours() -> dict[str, float]:
+    """Fallback: random hours near each person's daily target."""
     result: dict[str, float] = {}
     for name, daily, _ in TEAM:
         hours = random.gauss(daily, 1.5)
-        hours = max(0.0, min(daily + 2, hours))
-        result[name] = round(hours, 2)
+        result[name] = round(max(0.0, min(daily + 2, hours)), 2)
     return result
+
+
+async def fetch_hours(target_date: date) -> dict[str, float]:
+    """
+    Return hours worked by each team member on *target_date*.
+
+    Real data comes from the Renormalize API (api.renormalize.com).
+    Members without a Renormalize ID in RENORMALIZE_IDS fall back to mock data.
+    If RENORMALIZE_API_KEY is not set, all members use mock data.
+
+    API endpoint (discovered from browser network tab):
+      GET https://api.renormalize.com/charts/time-use-report
+      Headers: Authorization: Bearer {RENORMALIZE_API_KEY}
+      Params:  start_at, end_at (YYYY-MM-DD), entity_id, entity_type=engineer, page_size=10000
+      Response: {"data": [{"time_by_date": [{"date": "...", "total_auto_time": <seconds>,
+                                             "total_manual_time": <seconds>}]}]}
+    """
+    if not RENORMALIZE_API_KEY:
+        log.warning("RENORMALIZE_API_KEY not set — using mock data")
+        return _mock_hours()
+
+    date_str = target_date.isoformat()
+    results:  dict[str, float] = {}
+
+    import httpx  # local import — already in requirements.txt
+
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+
+        for name, daily, _ in TEAM:
+            renorm_id = RENORMALIZE_IDS.get(name)
+
+            if renorm_id is None:
+                # ID not configured yet → mock
+                hours = random.gauss(daily, 1.5)
+                results[name] = round(max(0.0, min(daily + 2, hours)), 2)
+                continue
+
+            try:
+                resp = await client.get(
+                    "https://api.renormalize.com/charts/time-use-report",
+                    params={
+                        "start_at":    date_str,
+                        "end_at":      date_str,
+                        "entity_id":   renorm_id,
+                        "entity_type": "engineer",
+                        "page_size":   10000,
+                    },
+                    headers=headers,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                # Sum auto + manual seconds for the target date across all tasks
+                total_seconds = sum(
+                    day["total_auto_time"] + day["total_manual_time"]
+                    for task in data.get("data", [])
+                    for day  in task.get("time_by_date", [])
+                    if day["date"] == date_str
+                )
+                results[name] = round(total_seconds / 3600, 2)
+
+            except httpx.HTTPStatusError as exc:
+                log.error("Renormalize API %s for %s (id=%s)", exc.response.status_code, name, renorm_id)
+                results[name] = 0.0
+            except Exception as exc:
+                log.exception("fetch_hours failed for %s: %s", name, exc)
+                results[name] = 0.0
+
+    return results
 
 
 async def fetch_week_hours(week_begin: date) -> dict[str, float]:
@@ -612,6 +676,77 @@ async def cmd_weekly(ctx: commands.Context) -> None:
 
     if ctx.guild:
         await ctx.message.add_reaction("✅")
+
+
+@bot.command(name="findmembers")
+async def cmd_find_members(ctx: commands.Context) -> None:
+    """!findmembers — list all Renormalize workspace members with their IDs (PM only)."""
+    if ctx.author.id != PM_USER_ID:
+        await ctx.message.add_reaction("🚫")
+        return
+    if not RENORMALIZE_API_KEY:
+        await ctx.send("❌ RENORMALIZE_API_KEY не задан в .env")
+        return
+
+    await ctx.message.add_reaction("⏳")
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://api.renormalize.com/members",
+                params={
+                    "roles":  "engineer,manager,sales,qa,field_worker",
+                    "status": "active,pending",
+                    "page":   1,
+                    "count":  200,
+                },
+                headers={"Authorization": f"Bearer {RENORMALIZE_API_KEY}"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        log.exception("findmembers API error: %s", exc)
+        user = await bot.fetch_user(PM_USER_ID)
+        await user.send(f"❌ Ошибка запроса к Renormalize:\n```{exc}```")
+        await ctx.message.add_reaction("🔴")
+        return
+
+    # Handle various response shapes
+    members = (
+        data if isinstance(data, list)
+        else data.get("data", data.get("members", data.get("users", [])))
+    )
+
+    if not members:
+        user = await bot.fetch_user(PM_USER_ID)
+        await user.send(
+            "⚠️ Пустой список или неизвестная структура ответа.\n"
+            f"Сырой ответ (первые 500 символов):\n```{str(data)[:500]}```"
+        )
+        await ctx.message.add_reaction("⚠️")
+        return
+
+    lines = ["👥 **Сотрудники в Renormalize (ID — Имя):**\n"]
+    for m in members:
+        uid  = m.get("id") or m.get("user_id") or "?"
+        name = (
+            m.get("full_name") or m.get("name")
+            or f"{m.get('first_name','')} {m.get('last_name','')}".strip()
+            or m.get("username") or "?"
+        )
+        role = m.get("role") or (m.get("roles") or [""])[0]
+        lines.append(f"`{uid}` — **{name}** ({role})")
+
+    text = "\n".join(lines)
+    user = await bot.fetch_user(PM_USER_ID)
+    # Split if over Discord's 2000-char limit
+    for chunk in [text[i:i+1900] for i in range(0, len(text), 1900)]:
+        await user.send(chunk)
+
+    await ctx.message.add_reaction("✅")
 
 
 # ---------------------------------------------------------------------------
