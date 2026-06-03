@@ -199,9 +199,10 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
         log.warning("RENORMALIZE_API_KEY not set — using mock data")
         return _mock_hours()
 
-    results: dict[str, float] = {}
-    month_start = target_date.replace(day=1)
-    prev_day    = target_date - timedelta(days=1)
+    results:  dict[str, float] = {}
+    date_str  = target_date.isoformat()
+    # end_at is EXCLUSIVE in the API — use target_date + 1 to include target_date entries
+    end_at    = (target_date + timedelta(days=1)).isoformat()
 
     import httpx
 
@@ -216,29 +217,26 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
                 continue
 
             try:
-                # Strategy: total(month→target) − total(month→prev_day) = hours on target_date
-                # This avoids relying on the date field in API entries (which may use a different TZ).
-
-                async def _fetch_total(start: date, end: date) -> float:
-                    if start > end:
-                        return 0.0
-                    r = await client.get(
-                        "https://api.renormalize.com/v1/time/progression",
-                        params={"user_ids": str(renorm_id),
-                                "start_at": start.isoformat(),
-                                "end_at":   end.isoformat()},
-                        headers=headers,
-                        timeout=15,
-                    )
-                    r.raise_for_status()
-                    return _sum_entries(r.json(), renorm_id)
-
-                total_to_date = await _fetch_total(month_start, target_date)
-                total_to_prev = await _fetch_total(month_start, prev_day) if prev_day >= month_start else 0.0
-
-                day_seconds = max(0.0, total_to_date - total_to_prev)
-                results[name] = round(day_seconds / 3600, 2)
-                log.info("%s on %s: %.2fh (%.0fs)", name, target_date, results[name], day_seconds)
+                resp = await client.get(
+                    "https://api.renormalize.com/v1/time/progression",
+                    params={
+                        "user_ids": str(renorm_id),
+                        "start_at": date_str,
+                        "end_at":   end_at,
+                    },
+                    headers=headers,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                entries = resp.json().get(str(renorm_id), [])
+                # Filter by date field (confirmed reliable by testapi)
+                total_sec = sum(
+                    e.get("total_time", 0)
+                    for e in entries
+                    if e.get("date") == date_str
+                )
+                results[name] = round(total_sec / 3600, 2)
+                log.info("%s on %s: %.2fh (%d entries)", name, date_str, results[name], len(entries))
 
             except httpx.HTTPStatusError as exc:
                 log.error("Renormalize %s for %s: %s", exc.response.status_code, name, exc.response.text[:100])
@@ -285,7 +283,7 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
                     params={
                         "user_ids": str(renorm_id),
                         "start_at": week_begin.isoformat(),
-                        "end_at":   end.isoformat(),
+                        "end_at":   (end + timedelta(days=1)).isoformat(),  # exclusive → +1
                     },
                     headers=headers,
                     timeout=15,
