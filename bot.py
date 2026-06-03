@@ -739,45 +739,34 @@ async def cmd_test_api(ctx: commands.Context) -> None:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
         base    = "https://api.renormalize.com/v1/time/progression"
 
-        month_start = today.replace(day=1).isoformat()
+        # Test Alexey Dumailenko (76542) — UI shows 9h38m on Jun 2, bot shows 6.8h
+        alexey_id = 76542
 
-        # Test 1: boss's exact format — user 76775, full month range
+        # Approach A: wide range Jun 1→Jun 3, filter by time_start date
         try:
             resp = await client.get(
                 base,
-                params={"user_ids": "76775", "start_at": month_start, "end_at": date_str},
+                params={"user_ids": str(alexey_id), "start_at": "2026-06-01", "end_at": "2026-06-03"},
                 headers=headers, timeout=10,
             )
-            parsed  = resp.json()
-            entries = parsed.get("76775", [])
-            total   = sum(e.get("total_time", 0) for e in entries)
+            all_entries = resp.json().get(str(alexey_id), [])
+            by_date: dict[str, int] = {}
+            by_ts_date: dict[str, int] = {}
+            for e in all_entries:
+                d = e.get("date", "?")
+                ts_d = str(e.get("time_start", ""))[:10]
+                by_date[d] = by_date.get(d, 0) + e.get("total_time", 0)
+                by_ts_date[ts_d] = by_ts_date.get(ts_d, 0) + e.get("total_time", 0)
             results.append(
-                f"**76775 (boss example), month range**\n"
-                f"Status: {resp.status_code} | Entries: {len(entries)} | "
-                f"total_time sum: {total}s = {total/3600:.2f}h\n"
-                f"```{resp.text[:700]}```"
+                f"**Alexey (76542) Jun1→Jun3**\n"
+                f"Entries: {len(all_entries)}\n"
+                f"By `date` field: {by_date}\n"
+                f"By `time_start` date: {by_ts_date}\n"
+                f"→ Jun2 by date: {by_date.get('2026-06-02',0)/3600:.2f}h\n"
+                f"→ Jun2 by time_start: {by_ts_date.get('2026-06-02',0)/3600:.2f}h"
             )
         except Exception as exc:
-            results.append(f"**76775 test** Error: {exc}")
-
-        # Test 2: Samvel with full month range (same format)
-        try:
-            resp2 = await client.get(
-                base,
-                params={"user_ids": str(test_id), "start_at": month_start, "end_at": date_str},
-                headers=headers, timeout=10,
-            )
-            parsed2  = resp2.json()
-            entries2 = parsed2.get(str(test_id), [])
-            total2   = sum(e.get("total_time", 0) for e in entries2)
-            results.append(
-                f"**Samvel (76632), month range**\n"
-                f"Status: {resp2.status_code} | Entries: {len(entries2)} | "
-                f"total_time sum: {total2}s = {total2/3600:.2f}h\n"
-                f"```{resp2.text[:700]}```"
-            )
-        except Exception as exc:
-            results.append(f"**Samvel test** Error: {exc}")
+            results.append(f"**Alexey test** Error: {exc}")
 
     user = await bot.fetch_user(PM_USER_ID)
     await user.send("🔬 **API test (Samvel, yesterday):**\n\n" + "\n\n".join(results))
