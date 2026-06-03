@@ -726,24 +726,30 @@ async def cmd_test_api(ctx: commands.Context) -> None:
     results: list[str] = []
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+        base    = "https://api.renormalize.com/v1/time/progression"
 
-        for params in [
-            {"user_id": test_id,    "start_date": date_str, "end_date": date_str},
-            {"entity_id": test_id,  "start_at":   date_str, "end_at":   date_str},
-            {"user_id": test_id,    "date":        date_str},
-        ]:
+        # Try different array formats for user_ids
+        attempts = [
+            # 1. user_ids[]=ID  (PHP/Rails array style)
+            (base, [("user_ids[]", test_id), ("start_date", date_str), ("end_date", date_str)]),
+            # 2. user_ids=ID,ID  (comma-separated)
+            (base, {"user_ids": str(test_id), "start_date": date_str, "end_date": date_str}),
+            # 3. user_ids as list via httpx list params
+            (base, [("user_ids", test_id), ("start_date", date_str), ("end_date", date_str)]),
+            # 4. No dates — maybe endpoint returns all data for a user
+            (base, [("user_ids[]", test_id)]),
+        ]
+
+        for url, params in attempts:
             try:
-                resp = await client.get(
-                    "https://api.renormalize.com/v1/time/progression",
-                    params=params,
-                    headers=headers,
-                    timeout=10,
-                )
+                resp = await client.get(url, params=params, headers=headers, timeout=10)
                 results.append(
                     f"**Params:** `{params}`\n"
                     f"**Status:** {resp.status_code}\n"
-                    f"**Body:** ```{resp.text[:400]}```"
+                    f"**Body:** ```{resp.text[:500]}```"
                 )
+                if resp.status_code == 200:
+                    break  # found working format
             except Exception as exc:
                 results.append(f"**Params:** `{params}`\n**Error:** {exc}")
 
