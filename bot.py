@@ -230,7 +230,7 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
                 data = resp.json()
                 log.info("Renormalize OK for %s: %s", name, str(data)[:200])
 
-                total_seconds = _extract_seconds(data, date_str)
+                total_seconds = _extract_seconds(data, date_str, renorm_id)
                 results[name] = round(total_seconds / 3600, 2)
 
             except httpx.HTTPStatusError as exc:
@@ -244,35 +244,54 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
     return results
 
 
-def _extract_seconds(data: dict, date_str: str) -> float:
+def _extract_seconds(data: dict, date_str: str, user_id: Optional[int] = None) -> float:
     """
     Extract total worked seconds from a Renormalize API response.
-    Handles multiple possible response shapes from /v1/time/progression.
+
+    /v1/time/progression returns:
+      {"USER_ID": [{"date":"YYYY-MM-DD", "total_time":<sec>, "time_start":"...", "time_end":"...", ...}]}
+
+    /charts/time-use-report returns (fallback):
+      {"data": [{"time_by_date": [{"date":"...", "total_auto_time":<sec>, "total_manual_time":<sec>}]}]}
     """
-    # Shape 1: {"data": [{"date": "...", "total_time": <sec>, ...}]}
+    # ── /v1/time/progression format ──────────────────────────────────────────
+    if user_id is not None:
+        key     = str(user_id)
+        entries = data.get(key, [])
+        if isinstance(entries, list) and entries:
+            # Sum total_time for all entries on the target date
+            total = sum(e.get("total_time", 0) for e in entries if e.get("date") == date_str)
+            if total > 0:
+                return float(total)
+
+            # Fallback: compute from time_start / time_end timestamps
+            from datetime import datetime as _dt
+            computed = 0.0
+            for e in entries:
+                if e.get("date") != date_str:
+                    continue
+                try:
+                    ts = _dt.fromisoformat(str(e["time_start"]).replace(" ", "T"))
+                    te = _dt.fromisoformat(str(e["time_end"]).replace(" ", "T"))
+                    diff = (te - ts).total_seconds()
+                    if diff > 0:
+                        computed += diff
+                except (KeyError, ValueError, TypeError):
+                    pass
+            if computed > 0:
+                return computed
+
+    # ── /charts/time-use-report format ──────────────────────────────────────
     if isinstance(data.get("data"), list):
-        for item in data["data"]:
-            if isinstance(item, dict):
-                if item.get("date") == date_str:
-                    return (item.get("total_time") or
-                            item.get("total_auto_time", 0) +
-                            item.get("total_manual_time", 0))
-                # No date field — might be a single-item summary
-                if "date" not in item:
-                    return (item.get("total_time") or
-                            item.get("total_auto_time", 0) +
-                            item.get("total_manual_time", 0))
+        total = 0.0
+        for task in data["data"]:
+            for day in task.get("time_by_date", []):
+                if day.get("date") == date_str:
+                    total += day.get("total_auto_time", 0) + day.get("total_manual_time", 0)
+        if total > 0:
+            return total
 
-    # Shape 2: {"total_time": <sec>}  or  {"worked_time": <sec>}
-    for key in ("total_time", "total_auto_time", "worked_time", "duration"):
-        if key in data:
-            return data[key]
-
-    # Shape 3: flat number
-    if isinstance(data, (int, float)):
-        return float(data)
-
-    log.warning("Unknown Renormalize response shape: %s", str(data)[:300])
+    log.warning("_extract_seconds: no time found in response. Shape: %s", str(data)[:200])
     return 0.0
 
 
@@ -727,24 +746,40 @@ async def cmd_test_api(ctx: commands.Context) -> None:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
         base    = "https://api.renormalize.com/v1/time/progression"
 
-        # Correct format: user_ids (string) + start_at + end_at
-        attempts = [
-            {"user_ids": str(test_id), "start_at": date_str, "end_at": date_str},
-            {"user_ids": str(test_id), "start_at": date_str, "end_at": date_str, "entity_type": "engineer"},
-        ]
+        # Test 1: /v1/time/progression (confirmed working format)
+        try:
+            resp = await client.get(
+                base,
+                params={"user_ids": str(test_id), "start_at": date_str, "end_at": date_str},
+                headers=headers, timeout=10,
+            )
+            parsed = resp.json()
+            entries = parsed.get(str(test_id), [])
+            total_sec = sum(e.get("total_time", 0) for e in entries if e.get("date") == date_str)
+            results.append(
+                f"**v1/time/progression**\n"
+                f"Status: {resp.status_code} | Entries: {len(entries)} | "
+                f"total_time sum: {total_sec}s = {total_sec/3600:.2f}h\n"
+                f"```{resp.text[:600]}```"
+            )
+        except Exception as exc:
+            results.append(f"**v1/time/progression** Error: {exc}")
 
-        for params in attempts:
-            try:
-                resp = await client.get(base, params=params, headers=headers, timeout=10)
-                results.append(
-                    f"**Params:** `{params}`\n"
-                    f"**Status:** {resp.status_code}\n"
-                    f"**Body:** ```{resp.text[:800]}```"
-                )
-                if resp.status_code == 200:
-                    break
-            except Exception as exc:
-                results.append(f"**Params:** `{params}`\n**Error:** {exc}")
+        # Test 2: /charts/time-use-report (browser endpoint — check if API key works here too)
+        try:
+            resp2 = await client.get(
+                "https://api.renormalize.com/charts/time-use-report",
+                params={"start_at": date_str, "end_at": date_str,
+                        "entity_id": test_id, "entity_type": "engineer", "page_size": 10000},
+                headers=headers, timeout=10,
+            )
+            results.append(
+                f"**charts/time-use-report**\n"
+                f"Status: {resp2.status_code}\n"
+                f"```{resp2.text[:600]}```"
+            )
+        except Exception as exc:
+            results.append(f"**charts/time-use-report** Error: {exc}")
 
     user = await bot.fetch_user(PM_USER_ID)
     await user.send("🔬 **API test (Samvel, yesterday):**\n\n" + "\n\n".join(results))
