@@ -216,11 +216,13 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
                 continue
 
             try:
+                # Boss confirmed: pull from month start to target date
+                month_start = target_date.replace(day=1).isoformat()
                 resp = await client.get(
                     "https://api.renormalize.com/v1/time/progression",
                     params={
                         "user_ids": str(renorm_id),
-                        "start_at": date_str,
+                        "start_at": month_start,
                         "end_at":   date_str,
                     },
                     headers=headers,
@@ -746,40 +748,45 @@ async def cmd_test_api(ctx: commands.Context) -> None:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
         base    = "https://api.renormalize.com/v1/time/progression"
 
-        # Test 1: /v1/time/progression (confirmed working format)
+        month_start = today.replace(day=1).isoformat()
+
+        # Test 1: boss's exact format — user 76775, full month range
         try:
             resp = await client.get(
                 base,
-                params={"user_ids": str(test_id), "start_at": date_str, "end_at": date_str},
+                params={"user_ids": "76775", "start_at": month_start, "end_at": date_str},
                 headers=headers, timeout=10,
             )
-            parsed = resp.json()
-            entries = parsed.get(str(test_id), [])
-            total_sec = sum(e.get("total_time", 0) for e in entries if e.get("date") == date_str)
+            parsed  = resp.json()
+            entries = parsed.get("76775", [])
+            total   = sum(e.get("total_time", 0) for e in entries)
             results.append(
-                f"**v1/time/progression**\n"
+                f"**76775 (boss example), month range**\n"
                 f"Status: {resp.status_code} | Entries: {len(entries)} | "
-                f"total_time sum: {total_sec}s = {total_sec/3600:.2f}h\n"
-                f"```{resp.text[:600]}```"
+                f"total_time sum: {total}s = {total/3600:.2f}h\n"
+                f"```{resp.text[:700]}```"
             )
         except Exception as exc:
-            results.append(f"**v1/time/progression** Error: {exc}")
+            results.append(f"**76775 test** Error: {exc}")
 
-        # Test 2: /charts/time-use-report (browser endpoint — check if API key works here too)
+        # Test 2: Samvel with full month range (same format)
         try:
             resp2 = await client.get(
-                "https://api.renormalize.com/charts/time-use-report",
-                params={"start_at": date_str, "end_at": date_str,
-                        "entity_id": test_id, "entity_type": "engineer", "page_size": 10000},
+                base,
+                params={"user_ids": str(test_id), "start_at": month_start, "end_at": date_str},
                 headers=headers, timeout=10,
             )
+            parsed2  = resp2.json()
+            entries2 = parsed2.get(str(test_id), [])
+            total2   = sum(e.get("total_time", 0) for e in entries2)
             results.append(
-                f"**charts/time-use-report**\n"
-                f"Status: {resp2.status_code}\n"
-                f"```{resp2.text[:600]}```"
+                f"**Samvel (76632), month range**\n"
+                f"Status: {resp2.status_code} | Entries: {len(entries2)} | "
+                f"total_time sum: {total2}s = {total2/3600:.2f}h\n"
+                f"```{resp2.text[:700]}```"
             )
         except Exception as exc:
-            results.append(f"**charts/time-use-report** Error: {exc}")
+            results.append(f"**Samvel test** Error: {exc}")
 
     user = await bot.fetch_user(PM_USER_ID)
     await user.send("🔬 **API test (Samvel, yesterday):**\n\n" + "\n\n".join(results))
