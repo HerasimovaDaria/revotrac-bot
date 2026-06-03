@@ -35,7 +35,8 @@ load_dotenv()
 
 TOKEN             = os.getenv("DISCORD_BOT_TOKEN", "")
 PM_USER_ID        = int(os.getenv("PM_USER_ID", "0"))
-RENORMALIZE_API_KEY = os.getenv("RENORMALIZE_API_KEY", "")
+# Support both variable names (RENORMALIZE_TOKEN is the real JWT, RENORMALIZE_API_KEY is legacy)
+RENORMALIZE_API_KEY = os.getenv("RENORMALIZE_TOKEN") or os.getenv("RENORMALIZE_API_KEY", "")
 
 MOSCOW  = ZoneInfo("Europe/Moscow")
 DB_PATH = "hours.db"
@@ -47,21 +48,21 @@ log = logging.getLogger(__name__)
 # Team roster
 # ---------------------------------------------------------------------------
 
-# (display_name, daily_target_hours, weekly_target_hours)
-TEAM: list[tuple[str, float, float]] = [
-    ("Лёша Седин",          8.0, 40.0),
-    ("Лёша Думалин",        8.0, 40.0),
-    ("Самвел",              8.0, 40.0),
-    ("Андрей Соколовский",  8.0, 40.0),
-    ("Давид",               8.0, 40.0),
-    ("Георгий",             8.0, 40.0),
-    ("Сергей Безруков",     5.0, 25.0),
-    ("Станислав Селиванов", 2.0, 10.0),
+# (display_name_ru, display_name_en, daily_target_hours, weekly_target_hours)
+TEAM: list[tuple[str, str, float, float]] = [
+    ("Лёша Седин",          "Aleksey Siedin",        8.0, 40.0),
+    ("Лёша Думалин",        "Alexey Dumailenko",     8.0, 40.0),
+    ("Самвел",              "Samvel Hovhannisyan",   8.0, 40.0),
+    ("Андрей Соколовский",  "Andrii Sokolovskyi",    8.0, 40.0),
+    ("Давид",               "David Dohru",           8.0, 40.0),
+    ("Георгий",             "George Kokashvilli",    8.0, 40.0),
+    ("Сергей Безруков",     "Sergii Bezrukov",       5.0, 25.0),
+    ("Станислав Селиванов", "Stanislav Selivanov",   2.0, 10.0),
 ]
 
 MEMBER_NAMES   = [m[0] for m in TEAM]
-DAILY_TARGET:  dict[str, float] = {m[0]: m[1] for m in TEAM}
-WEEKLY_TARGET: dict[str, float] = {m[0]: m[2] for m in TEAM}
+DAILY_TARGET:  dict[str, float] = {m[0]: m[2] for m in TEAM}
+WEEKLY_TARGET: dict[str, float] = {m[0]: m[3] for m in TEAM}
 
 # Renormalize user IDs — найти их можно командой !findmembers
 # или вручную: открой отчёт сотрудника в Renormalize, ID в URL: ?id=XXXXX
@@ -173,7 +174,7 @@ def week_start(d: date) -> date:
 def _mock_hours() -> dict[str, float]:
     """Fallback: random hours near each person's daily target."""
     result: dict[str, float] = {}
-    for name, daily, _ in TEAM:
+    for name, _en, daily, _ in TEAM:
         hours = random.gauss(daily, 1.5)
         result[name] = round(max(0.0, min(daily + 2, hours)), 2)
     return result
@@ -206,48 +207,74 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
 
-        for name, daily, _ in TEAM:
+        for name, _en, daily, _ in TEAM:
             renorm_id = RENORMALIZE_IDS.get(name)
 
             if renorm_id is None:
-                # ID not configured yet → mock
                 hours = random.gauss(daily, 1.5)
                 results[name] = round(max(0.0, min(daily + 2, hours)), 2)
                 continue
 
             try:
                 resp = await client.get(
-                    "https://api.renormalize.com/charts/time-use-report",
+                    "https://api.renormalize.com/v1/time/progression",
                     params={
-                        "start_at":    date_str,
-                        "end_at":      date_str,
-                        "entity_id":   renorm_id,
-                        "entity_type": "engineer",
-                        "page_size":   10000,
+                        "user_id":    renorm_id,
+                        "start_date": date_str,
+                        "end_date":   date_str,
                     },
                     headers=headers,
                     timeout=15,
                 )
                 resp.raise_for_status()
                 data = resp.json()
+                log.debug("Renormalize response for %s: %s", name, str(data)[:300])
 
-                # Sum auto + manual seconds for the target date across all tasks
-                total_seconds = sum(
-                    day["total_auto_time"] + day["total_manual_time"]
-                    for task in data.get("data", [])
-                    for day  in task.get("time_by_date", [])
-                    if day["date"] == date_str
-                )
+                # Response shape TBD — try several known formats
+                total_seconds = _extract_seconds(data, date_str)
                 results[name] = round(total_seconds / 3600, 2)
 
             except httpx.HTTPStatusError as exc:
-                log.error("Renormalize API %s for %s (id=%s)", exc.response.status_code, name, renorm_id)
+                log.error("Renormalize %s for %s (id=%s): %s",
+                          exc.response.status_code, name, renorm_id, exc.response.text[:200])
                 results[name] = 0.0
             except Exception as exc:
                 log.exception("fetch_hours failed for %s: %s", name, exc)
                 results[name] = 0.0
 
     return results
+
+
+def _extract_seconds(data: dict, date_str: str) -> float:
+    """
+    Extract total worked seconds from a Renormalize API response.
+    Handles multiple possible response shapes from /v1/time/progression.
+    """
+    # Shape 1: {"data": [{"date": "...", "total_time": <sec>, ...}]}
+    if isinstance(data.get("data"), list):
+        for item in data["data"]:
+            if isinstance(item, dict):
+                if item.get("date") == date_str:
+                    return (item.get("total_time") or
+                            item.get("total_auto_time", 0) +
+                            item.get("total_manual_time", 0))
+                # No date field — might be a single-item summary
+                if "date" not in item:
+                    return (item.get("total_time") or
+                            item.get("total_auto_time", 0) +
+                            item.get("total_manual_time", 0))
+
+    # Shape 2: {"total_time": <sec>}  or  {"worked_time": <sec>}
+    for key in ("total_time", "total_auto_time", "worked_time", "duration"):
+        if key in data:
+            return data[key]
+
+    # Shape 3: flat number
+    if isinstance(data, (int, float)):
+        return float(data)
+
+    log.warning("Unknown Renormalize response shape: %s", str(data)[:300])
+    return 0.0
 
 
 async def fetch_week_hours(week_begin: date) -> dict[str, float]:
@@ -298,7 +325,7 @@ def format_daily_report(
         + "━" * 38 + "\n"
     )
 
-    active = [(n, d, w) for n, d, w in TEAM
+    active = [(n, d, w) for n, _en, d, w in TEAM
               if filter_members is None or n in filter_members]
 
     lines: list[str] = []
@@ -324,7 +351,7 @@ def format_weekly_report(
         + "━" * 38 + "\n"
     )
 
-    active = [(n, d, w) for n, d, w in TEAM
+    active = [(n, d, w) for n, _en, d, w in TEAM
               if filter_members is None or n in filter_members]
 
     lines: list[str] = []
@@ -355,8 +382,12 @@ def _subscribe_prompt(current: list[str]) -> str:
 class SubscribeSelect(discord.ui.Select):
     def __init__(self, current: list[str]) -> None:
         options = [
-            discord.SelectOption(label=name, value=name, default=name in current)
-            for name in MEMBER_NAMES
+            discord.SelectOption(
+                label=f"{en_name}  (id {RENORMALIZE_IDS.get(name, '?')})",
+                value=name,
+                default=name in current,
+            )
+            for name, en_name, _, _ in TEAM
         ]
         super().__init__(
             placeholder="Выберите сотрудников для отслеживания…",
@@ -427,8 +458,8 @@ class DayOffSelect(discord.ui.Select):
             min_values=0,
             max_values=len(MEMBER_NAMES),
             options=[
-                discord.SelectOption(label=name, value=name)
-                for name in MEMBER_NAMES
+                discord.SelectOption(label=f"{en_name} ({name})", value=name)
+                for name, en_name, _, _ in TEAM
             ],
         )
 
@@ -676,6 +707,49 @@ async def cmd_weekly(ctx: commands.Context) -> None:
 
     if ctx.guild:
         await ctx.message.add_reaction("✅")
+
+
+@bot.command(name="testapi")
+async def cmd_test_api(ctx: commands.Context) -> None:
+    """!testapi — test Renormalize API with Samvel's ID, show raw response (PM only)."""
+    if ctx.author.id != PM_USER_ID:
+        await ctx.message.add_reaction("🚫")
+        return
+
+    await ctx.message.add_reaction("⏳")
+    import httpx
+
+    today    = datetime.now(MOSCOW).date()
+    test_id  = 76632  # Samvel
+    date_str = (today - timedelta(days=1)).isoformat()
+
+    results: list[str] = []
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+
+        for params in [
+            {"user_id": test_id,    "start_date": date_str, "end_date": date_str},
+            {"entity_id": test_id,  "start_at":   date_str, "end_at":   date_str},
+            {"user_id": test_id,    "date":        date_str},
+        ]:
+            try:
+                resp = await client.get(
+                    "https://api.renormalize.com/v1/time/progression",
+                    params=params,
+                    headers=headers,
+                    timeout=10,
+                )
+                results.append(
+                    f"**Params:** `{params}`\n"
+                    f"**Status:** {resp.status_code}\n"
+                    f"**Body:** ```{resp.text[:400]}```"
+                )
+            except Exception as exc:
+                results.append(f"**Params:** `{params}`\n**Error:** {exc}")
+
+    user = await bot.fetch_user(PM_USER_ID)
+    await user.send("🔬 **API test (Samvel, yesterday):**\n\n" + "\n\n".join(results))
+    await ctx.message.add_reaction("✅")
 
 
 @bot.command(name="findmembers")
