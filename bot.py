@@ -1,13 +1,13 @@
 """
 Discord bot: daily team hours reports with day-off tracking and per-user subscriptions.
 
-Morning routine (per-user configured time, default 09:00 Moscow):
+Morning routine (per-user configured time, default 09:00 UTC+3):
   1. Personalized report for YESTERDAY — sent to every subscriber (only their chosen members).
   2. Day-off selector for TODAY — sent to PM only (at PM's configured time).
 
 Commands:
   !subscribe        — choose which team members appear in your daily reports
-  !settime [HH:MM]  — set your daily report time (Moscow timezone). No arg = show current.
+  !settime [HH:MM]  — set your daily report time (UTC+3). No arg = show current.
   !report           — trigger your personalized morning report right now
   !dayoff [DD.MM]   — open day-off selector for a specific date (PM only)
   !weekly           — show current-week progress for your subscribed members
@@ -175,7 +175,7 @@ def get_all_subscribers() -> dict[int, list[str]]:
 # --- preference helpers (report time per user) ------------------------------
 
 def save_preference(user_id: int, hour: int, minute: int) -> None:
-    """Save or update the user's daily report time (stored as Moscow time)."""
+    """Save or update the user's daily report time (stored as UTC+3)."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -201,7 +201,7 @@ def get_preference(user_id: int) -> tuple[int, int]:
 
 
 def get_users_for_time(hour: int, minute: int) -> list[int]:
-    """Return Discord user IDs of subscribers whose report fires at hour:minute (Moscow).
+    """Return Discord user IDs of subscribers whose report fires at hour:minute (UTC+3).
 
     Users who never ran !settime default to 9:00 and are included when hour=9, minute=0.
     """
@@ -517,7 +517,7 @@ class SubscribeView(discord.ui.View):
             msg = (
                 f"✅ **Подписка сохранена!**\n\n"
                 f"Будешь получать отчёты по:\n{bullet_list}\n\n"
-                f"⏰ Время отчёта: **{h:02d}:{m:02d} по Москве**.\n"
+                f"⏰ Время отчёта: **{h:02d}:{m:02d} UTC+3**.\n"
                 f"Изменить время: `!settime HH:MM`  (например, `!settime 08:30`)"
             )
         else:
@@ -734,7 +734,7 @@ async def on_ready() -> None:
         kwargs={"bot": bot},
     )
     scheduler.start()
-    log.info("Scheduler started — checking report times every minute (Moscow)")
+    log.info("Scheduler started — checking report times every minute (UTC+3)")
 
 
 # ---------------------------------------------------------------------------
@@ -852,11 +852,11 @@ async def cmd_weekly(ctx: commands.Context) -> None:
 
 @bot.command(name="settime")
 async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> None:
-    """!settime [HH:MM] — set your daily report time (Moscow timezone). No arg = show current."""
+    """!settime [HH:MM] — set your daily report time (UTC+3). No arg = show current."""
     if time_str is None:
         h, m = get_preference(ctx.author.id)
         await ctx.send(
-            f"🕐 Твоё текущее время отчёта: **{h:02d}:{m:02d} по Москве**.\n"
+            f"🕐 Твоё текущее время отчёта: **{h:02d}:{m:02d} UTC+3**.\n"
             f"Изменить: `!settime 08:30`"
         )
         return
@@ -873,7 +873,7 @@ async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> 
 
     save_preference(ctx.author.id, hour, minute)
     await ctx.send(
-        f"✅ Время ежедневного отчёта установлено: **{hour:02d}:{minute:02d} по Москве**.\n"
+        f"✅ Время ежедневного отчёта установлено: **{hour:02d}:{minute:02d} UTC+3**.\n"
         f"Если ещё не выбрал сотрудников — используй `!subscribe`."
     )
 
