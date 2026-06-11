@@ -6,12 +6,15 @@ Morning routine (per-user configured time, default 09:00 UTC+3):
   2. Day-off selector for TODAY — sent to PM only (at PM's configured time).
 
 Commands:
-  !subscribe        — choose which team members appear in your daily reports
-  !settime [HH:MM]  — set your daily report time (UTC+3). No arg = show current.
-  !report           — trigger your personalized morning report right now
-  !dayoff [DD.MM]   — open day-off selector for a specific date (PM only)
-  !weekly           — show current-week progress for your subscribed members
-  !findmembers      — list all Renormalize workspace members with their IDs (PM only)
+  !subscribe              — choose which team members appear in your daily reports
+  !settime [HH:MM]        — set your daily report time (UTC+3). No arg = show current.
+  !report                 — trigger your personalized morning report right now
+  !dayoff [DD.MM]         — open day-off selector for a specific date (PM only)
+  !weekly                 — show current-week progress for your subscribed members
+  !members                — list all people available for tracking
+  !addmember <id> <name>  — add a person by Renormalize ID (visible to everyone)
+  !removemember <id>      — remove a custom member (PM only)
+  !findmembers            — list all Renormalize workspace members (PM only)
 """
 
 import asyncio
@@ -111,6 +114,16 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS custom_members (
+                renormalize_id INTEGER PRIMARY KEY,
+                display_name   TEXT    NOT NULL,
+                daily_hours    REAL    NOT NULL DEFAULT 8.0,
+                weekly_hours   REAL    NOT NULL DEFAULT 40.0
+            )
+            """
+        )
         conn.commit()
 
 
@@ -169,6 +182,62 @@ def get_all_subscribers() -> dict[int, list[str]]:
     result: dict[int, list[str]] = {}
     for uid, member in rows:
         result.setdefault(uid, []).append(member)
+    return result
+
+
+# --- custom member helpers --------------------------------------------------
+
+def add_custom_member(renorm_id: int, display_name: str,
+                      daily: float = 8.0, weekly: float = 40.0) -> None:
+    """Add or update a person in the shared member pool."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO custom_members (renormalize_id, display_name, daily_hours, weekly_hours)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(renormalize_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                daily_hours  = excluded.daily_hours,
+                weekly_hours = excluded.weekly_hours
+            """,
+            (renorm_id, display_name, daily, weekly),
+        )
+        conn.commit()
+
+
+def remove_custom_member(renorm_id: int) -> bool:
+    """Remove a custom member. Returns True if something was deleted."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.execute(
+            "DELETE FROM custom_members WHERE renormalize_id = ?", (renorm_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_custom_members() -> list[tuple[int, str, float, float]]:
+    """Return [(renormalize_id, display_name, daily_h, weekly_h)] from DB."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT renormalize_id, display_name, daily_hours, weekly_hours "
+            "FROM custom_members ORDER BY rowid"
+        ).fetchall()
+    return [(r[0], r[1], float(r[2]), float(r[3])) for r in rows]
+
+
+def _all_members() -> list[tuple[str, str, float, float]]:
+    """Return TEAM + custom members as (name, en_name, daily_h, weekly_h)."""
+    result: list[tuple[str, str, float, float]] = list(TEAM)
+    for renorm_id, name, daily, weekly in get_custom_members():
+        result.append((name, name, daily, weekly))
+    return result
+
+
+def _all_renormalize_ids() -> dict[str, Optional[int]]:
+    """Return RENORMALIZE_IDS merged with custom member IDs."""
+    result: dict[str, Optional[int]] = dict(RENORMALIZE_IDS)
+    for renorm_id, name, _, _ in get_custom_members():
+        result[name] = renorm_id
     return result
 
 
@@ -245,7 +314,7 @@ def week_start(d: date) -> date:
 def _mock_hours() -> dict[str, float]:
     """Fallback: random hours near each person's daily target."""
     result: dict[str, float] = {}
-    for name, _en, daily, _ in TEAM:
+    for name, _en, daily, _ in _all_members():
         hours = random.gauss(daily, 1.5)
         result[name] = round(max(0.0, min(daily + 2, hours)), 2)
     return result
@@ -277,11 +346,12 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
 
     import httpx
 
+    all_ids = _all_renormalize_ids()
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
 
-        for name, _en, daily, _ in TEAM:
-            renorm_id = RENORMALIZE_IDS.get(name)
+        for name, _en, daily, _ in _all_members():
+            renorm_id = all_ids.get(name)
             if renorm_id is None:
                 hours = random.gauss(daily, 1.5)
                 results[name] = round(max(0.0, min(daily + 2, hours)), 2)
@@ -332,20 +402,22 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
     Return total hours worked per team member for the week starting *week_begin*.
     Makes 1 API call per member (not 7) for efficiency.
     """
-    today = datetime.now(MOSCOW).date()
-    end   = min(week_begin + timedelta(days=6), today)
-    totals: dict[str, float] = {name: 0.0 for name in MEMBER_NAMES}
+    today      = datetime.now(MOSCOW).date()
+    end        = min(week_begin + timedelta(days=6), today)
+    all_m      = _all_members()
+    all_ids    = _all_renormalize_ids()
+    totals: dict[str, float] = {m[0]: 0.0 for m in all_m}
 
     if not RENORMALIZE_API_KEY:
-        for name, _en, daily, weekly in TEAM:
+        for name, _en, daily, weekly in all_m:
             totals[name] = round(random.gauss(weekly * 0.85, weekly * 0.1), 2)
         return totals
 
     import httpx
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
-        for name, _en, _, _ in TEAM:
-            renorm_id = RENORMALIZE_IDS.get(name)
+        for name, _en, _, _ in all_m:
+            renorm_id = all_ids.get(name)
             if renorm_id is None:
                 continue
             try:
@@ -405,7 +477,7 @@ def format_daily_report(
         + "━" * 38 + "\n"
     )
 
-    active = [(n, d, w) for n, _en, d, w in TEAM
+    active = [(n, d, w) for n, _en, d, w in _all_members()
               if filter_members is None or n in filter_members]
 
     lines: list[str] = []
@@ -431,7 +503,7 @@ def format_weekly_report(
         + "━" * 38 + "\n"
     )
 
-    active = [(n, d, w) for n, _en, d, w in TEAM
+    active = [(n, d, w) for n, _en, d, w in _all_members()
               if filter_members is None or n in filter_members]
 
     lines: list[str] = []
@@ -461,13 +533,14 @@ def _subscribe_prompt(current: list[str]) -> str:
 
 class SubscribeSelect(discord.ui.Select):
     def __init__(self, current: list[str]) -> None:
+        all_ids = _all_renormalize_ids()
         options = [
             discord.SelectOption(
-                label=f"{en_name}  (id {RENORMALIZE_IDS.get(name, '?')})",
+                label=f"{en_name}  (id {all_ids.get(name, '?')})",
                 value=name,
                 default=name in current,
             )
-            for name, en_name, _, _ in TEAM
+            for name, en_name, _, _ in _all_members()
         ]
         super().__init__(
             placeholder="Выберите сотрудников для отслеживания…",
@@ -539,13 +612,14 @@ class SubscribeView(discord.ui.View):
 class DayOffSelect(discord.ui.Select):
     def __init__(self, target_date: date) -> None:
         self.target_date = target_date
+        all_m = _all_members()
         super().__init__(
             placeholder="Выберите сотрудников…",
             min_values=0,
-            max_values=len(MEMBER_NAMES),
+            max_values=min(len(all_m), 25),   # Discord caps at 25
             options=[
                 discord.SelectOption(label=f"{en_name} ({name})", value=name)
-                for name, en_name, _, _ in TEAM
+                for name, en_name, _, _ in all_m
             ],
         )
 
@@ -848,6 +922,54 @@ async def cmd_weekly(ctx: commands.Context) -> None:
 
     if ctx.guild:
         await ctx.message.add_reaction("✅")
+
+
+@bot.command(name="members")
+async def cmd_members(ctx: commands.Context) -> None:
+    """!members — list all people available for tracking."""
+    lines = ["**👥 Все доступные сотрудники:**\n"]
+    all_ids = _all_renormalize_ids()
+    for name, en_name, daily, _ in TEAM:
+        rid = all_ids.get(name, "?")
+        lines.append(f"`{rid}` — {en_name}  ({daily:.0f}h/day)")
+
+    custom = get_custom_members()
+    if custom:
+        lines.append("\n**Добавлены вручную:**")
+        for rid, dname, daily, _ in custom:
+            lines.append(f"`{rid}` — {dname}  ({daily:.0f}h/day)")
+
+    lines.append("\n➕ Добавить: `!addmember <renormalize_id> <имя>`")
+    await ctx.send("\n".join(lines))
+
+
+@bot.command(name="addmember")
+async def cmd_addmember(ctx: commands.Context, renorm_id: int, *, name: str) -> None:
+    """!addmember <renormalize_id> <name> — add a person by their Renormalize ID."""
+    name = name.strip()
+    if not name:
+        await ctx.send("❌ Укажи имя. Пример: `!addmember 12345 Ivan Petrov`")
+        return
+
+    add_custom_member(renorm_id, name)
+    await ctx.send(
+        f"✅ Добавлен: **{name}** (id `{renorm_id}`)\n"
+        f"Теперь его можно выбрать через `!subscribe`."
+    )
+
+
+@bot.command(name="removemember")
+async def cmd_removemember(ctx: commands.Context, renorm_id: int) -> None:
+    """!removemember <renormalize_id> — remove a custom member (PM only)."""
+    if ctx.author.id != PM_USER_ID:
+        await ctx.message.add_reaction("🚫")
+        return
+
+    deleted = remove_custom_member(renorm_id)
+    if deleted:
+        await ctx.send(f"✅ Сотрудник с id `{renorm_id}` удалён из списка.")
+    else:
+        await ctx.send(f"⚠️ Сотрудник с id `{renorm_id}` не найден среди добавленных вручную.")
 
 
 @bot.command(name="settime")
