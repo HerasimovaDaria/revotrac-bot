@@ -1,16 +1,17 @@
 """
 Discord bot: daily team hours reports with day-off tracking and per-user subscriptions.
 
-Morning routine (09:00 Moscow):
+Morning routine (per-user configured time, default 09:00 Moscow):
   1. Personalized report for YESTERDAY — sent to every subscriber (only their chosen members).
-  2. Day-off selector for TODAY — sent to PM only.
+  2. Day-off selector for TODAY — sent to PM only (at PM's configured time).
 
 Commands:
-  !subscribe      — choose which team members appear in your daily reports
-  !report         — trigger your personalized morning report right now
-  !dayoff [DD.MM] — open day-off selector for a specific date (PM only)
-  !weekly         — show current-week progress for your subscribed members
-  !findmembers    — list all Renormalize workspace members with their IDs (PM only)
+  !subscribe        — choose which team members appear in your daily reports
+  !settime [HH:MM]  — set your daily report time (Moscow timezone). No arg = show current.
+  !report           — trigger your personalized morning report right now
+  !dayoff [DD.MM]   — open day-off selector for a specific date (PM only)
+  !weekly           — show current-week progress for your subscribed members
+  !findmembers      — list all Renormalize workspace members with their IDs (PM only)
 """
 
 import asyncio
@@ -101,6 +102,15 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS preferences (
+                discord_user_id INTEGER PRIMARY KEY,
+                report_hour     INTEGER NOT NULL DEFAULT 9,
+                report_minute   INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
         conn.commit()
 
 
@@ -159,6 +169,67 @@ def get_all_subscribers() -> dict[int, list[str]]:
     result: dict[int, list[str]] = {}
     for uid, member in rows:
         result.setdefault(uid, []).append(member)
+    return result
+
+
+# --- preference helpers (report time per user) ------------------------------
+
+def save_preference(user_id: int, hour: int, minute: int) -> None:
+    """Save or update the user's daily report time (stored as Moscow time)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO preferences (discord_user_id, report_hour, report_minute)
+            VALUES (?, ?, ?)
+            ON CONFLICT(discord_user_id) DO UPDATE SET
+                report_hour   = excluded.report_hour,
+                report_minute = excluded.report_minute
+            """,
+            (user_id, hour, minute),
+        )
+        conn.commit()
+
+
+def get_preference(user_id: int) -> tuple[int, int]:
+    """Return (hour, minute) for this user's report time. Default: 9:00."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT report_hour, report_minute FROM preferences WHERE discord_user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return (row[0], row[1]) if row else (9, 0)
+
+
+def get_users_for_time(hour: int, minute: int) -> list[int]:
+    """Return Discord user IDs of subscribers whose report fires at hour:minute (Moscow).
+
+    Users who never ran !settime default to 9:00 and are included when hour=9, minute=0.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        # Users who explicitly set this time
+        explicit = conn.execute(
+            """
+            SELECT DISTINCT s.discord_user_id
+            FROM subscriptions s
+            JOIN preferences p ON s.discord_user_id = p.discord_user_id
+            WHERE p.report_hour = ? AND p.report_minute = ?
+            """,
+            (hour, minute),
+        ).fetchall()
+        result = [r[0] for r in explicit]
+
+        # At 9:00 also include users with no preference row (default = 9:00)
+        if hour == 9 and minute == 0:
+            default_users = conn.execute(
+                """
+                SELECT DISTINCT s.discord_user_id
+                FROM subscriptions s
+                WHERE s.discord_user_id NOT IN (SELECT discord_user_id FROM preferences)
+                """
+            ).fetchall()
+            for r in default_users:
+                if r[0] not in result:
+                    result.append(r[0])
     return result
 
 
@@ -442,7 +513,13 @@ class SubscribeView(discord.ui.View):
 
         if chosen:
             bullet_list = "\n".join(f"  • {n}" for n in chosen)
-            msg = f"✅ **Подписка сохранена!**\n\nБудешь получать утренние отчёты по:\n{bullet_list}"
+            h, m = get_preference(self.user_id)
+            msg = (
+                f"✅ **Подписка сохранена!**\n\n"
+                f"Будешь получать отчёты по:\n{bullet_list}\n\n"
+                f"⏰ Время отчёта: **{h:02d}:{m:02d} по Москве**.\n"
+                f"Изменить время: `!settime HH:MM`  (например, `!settime 08:30`)"
+            )
         else:
             msg = (
                 "⚠️ Подписка пустая — ты не будешь получать утренние отчёты.\n"
@@ -576,6 +653,61 @@ async def send_morning_routine(
         log.exception("Failed to send day-off selector to PM: %s", exc)
 
 
+async def check_report_time(bot: commands.Bot) -> None:
+    """
+    Called every minute by the scheduler.
+    Sends personalized reports to every subscriber whose report time matches now,
+    and sends the day-off selector to the PM at the PM's configured time.
+    """
+    now  = datetime.now(MOSCOW)
+    h, m = now.hour, now.minute
+    today     = now.date()
+    yesterday = today - timedelta(days=1)
+
+    user_ids              = get_users_for_time(h, m)
+    pm_h, pm_m            = get_preference(PM_USER_ID)
+    is_pm_time            = (h == pm_h and m == pm_m)
+
+    if not user_ids and not is_pm_time:
+        return
+
+    # --- Fetch data once for all subscribers at this time slot ---
+    if user_ids:
+        try:
+            hours = await fetch_hours(yesterday)
+        except Exception as exc:
+            log.exception("fetch_hours: %s", exc)
+            hours = {name: 0.0 for name in MEMBER_NAMES}
+
+        day_offs = get_day_offs(yesterday)
+        wb       = week_start(yesterday)
+
+        try:
+            week_hours = await fetch_week_hours(wb)
+        except Exception as exc:
+            log.exception("fetch_week_hours: %s", exc)
+            week_hours = {name: 0.0 for name in MEMBER_NAMES}
+
+        for user_id in user_ids:
+            members = get_subscription(user_id)
+            if members:
+                await _deliver_report(
+                    bot, user_id, yesterday, hours, week_hours, day_offs, members
+                )
+
+    # --- Day-off selector → PM (at PM's configured time) ---
+    if is_pm_time:
+        try:
+            pm   = await bot.fetch_user(PM_USER_ID)
+            view = DayOffView(today)
+            await pm.send(
+                f"📅 **Кто сегодня ({today.strftime('%d.%m.%Y')}) не работает?**",
+                view=view,
+            )
+        except Exception as exc:
+            log.exception("Failed to send day-off selector to PM: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Bot setup
 # ---------------------------------------------------------------------------
@@ -594,15 +726,15 @@ async def on_ready() -> None:
     init_db()
 
     scheduler.add_job(
-        send_morning_routine,
+        check_report_time,
         trigger="cron",
-        hour=9, minute=0,
-        id="morning_report",
+        minute="*",          # fires every minute; sends only to users whose time matches
+        id="check_report",
         replace_existing=True,
         kwargs={"bot": bot},
     )
     scheduler.start()
-    log.info("Scheduler started — morning report at 09:00 Moscow time")
+    log.info("Scheduler started — checking report times every minute (Moscow)")
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +848,34 @@ async def cmd_weekly(ctx: commands.Context) -> None:
 
     if ctx.guild:
         await ctx.message.add_reaction("✅")
+
+
+@bot.command(name="settime")
+async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> None:
+    """!settime [HH:MM] — set your daily report time (Moscow timezone). No arg = show current."""
+    if time_str is None:
+        h, m = get_preference(ctx.author.id)
+        await ctx.send(
+            f"🕐 Твоё текущее время отчёта: **{h:02d}:{m:02d} по Москве**.\n"
+            f"Изменить: `!settime 08:30`"
+        )
+        return
+
+    try:
+        parts  = time_str.strip().split(":")
+        hour   = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("out of range")
+    except (ValueError, IndexError):
+        await ctx.send("❌ Неверный формат. Пример: `!settime 09:00` или `!settime 8:30`")
+        return
+
+    save_preference(ctx.author.id, hour, minute)
+    await ctx.send(
+        f"✅ Время ежедневного отчёта установлено: **{hour:02d}:{minute:02d} по Москве**.\n"
+        f"Если ещё не выбрал сотрудников — используй `!subscribe`."
+    )
 
 
 @bot.command(name="testapi")
