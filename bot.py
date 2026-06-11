@@ -894,6 +894,37 @@ async def cmd_dayoff(ctx: commands.Context, date_str: Optional[str] = None) -> N
         await ctx.message.add_reaction("📨")
 
 
+@bot.command(name="start")
+async def cmd_start(ctx: commands.Context) -> None:
+    """!start — onboarding: show what this bot does and how to set it up."""
+    text = (
+        "👋 **Привет! Я слежу за часами команды в Renormalize.**\n"
+        "Каждое утро буду присылать тебе в личку отчёт по нужным людям.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "**🚀 Быстрый старт — 3 шага:**\n\n"
+        "**1. Посмотри, кто уже есть в списке**\n"
+        "```\n!members\n```\n"
+        "**2. Если нужного человека нет — добавь его по Renormalize ID**\n"
+        "```\n!addmember 12345 Имя Фамилия\n```\n"
+        "*(ID найдёшь в URL профиля сотрудника в Renormalize: `?entity_id=XXXXX`)*\n\n"
+        "**3. Подпишись на нужных людей и выбери время отчёта**\n"
+        "```\n!subscribe\n!settime 09:00\n```\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "**📋 Все команды:**\n\n"
+        "`!members` — список всех доступных сотрудников\n"
+        "`!addmember <id> <имя>` — добавить человека по Renormalize ID\n"
+        "`!subscribe` — выбрать, чьи часы видеть в отчёте\n"
+        "`!settime HH:MM` — время ежедневного отчёта (UTC+3, по умолчанию 09:00)\n"
+        "`!report` — получить отчёт прямо сейчас\n"
+        "`!weekly` — прогресс за текущую неделю\n"
+        "`!start` — показать эту инструкцию снова\n"
+    )
+    user = await bot.fetch_user(ctx.author.id)
+    await user.send(text)
+    if ctx.guild:
+        await ctx.message.add_reaction("📨")
+
+
 @bot.command(name="weekly")
 async def cmd_weekly(ctx: commands.Context) -> None:
     """!weekly — show current-week progress for your subscribed members."""
