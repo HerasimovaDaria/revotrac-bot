@@ -1,8 +1,11 @@
 """
 Discord bot: daily team hours reports with day-off tracking and per-user subscriptions.
 
-Morning routine (per-user configured time, default 09:00 UTC+3):
-  1. Personalized report for YESTERDAY — sent to every subscriber (only their chosen members).
+Morning routine (per-user configured time, default 09:00 UTC+3, Mon–Fri only):
+  1. Personalized report for the PREVIOUS WORKDAY (on Monday — for Friday) — sent to every
+     subscriber. Lists only their members with an hours shortfall (⚠️/🔴) or no daily report
+     in REPORTS_CHANNEL_ID (any message 00:00–23:59 UTC+3). People on a day off are skipped.
+     Weekly progress is appended only to the report for Friday.
   2. Day-off selector for TODAY — sent to PM only (at PM's configured time).
 
 Commands:
@@ -11,7 +14,8 @@ Commands:
   !report                 — trigger your personalized morning report right now
   !dayoff [DD.MM]         — open day-off selector for a specific date (PM only)
   !weekly                 — show current-week progress for your subscribed members
-  !members                — list all people available for tracking
+  !members                — list all people available for tracking (with Discord links)
+  !linkdiscord <name> @user — link a member to their Discord account (for daily-report checks)
   !addmember <id> <name>  — add a person by Renormalize ID (visible to everyone)
   !removemember <id>      — remove a custom member (PM only)
   !findmembers            — list all Renormalize workspace members (PM only)
@@ -21,6 +25,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -41,9 +46,11 @@ TOKEN             = os.getenv("DISCORD_BOT_TOKEN", "")
 PM_USER_ID        = int(os.getenv("PM_USER_ID", "0"))
 # Support both variable names (RENORMALIZE_TOKEN is the real JWT, RENORMALIZE_API_KEY is legacy)
 RENORMALIZE_API_KEY = os.getenv("RENORMALIZE_TOKEN") or os.getenv("RENORMALIZE_API_KEY", "")
+# Channel with daily reports (text channel or forum). 0 → report check is disabled.
+REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID") or 0)
 
 MOSCOW  = ZoneInfo("Europe/Moscow")
-DB_PATH = "hours.db"
+DB_PATH = os.getenv("DB_PATH") or "hours.db"   # on Railway point it to the Volume, e.g. /data/hours.db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -86,6 +93,8 @@ RENORMALIZE_IDS: dict[str, Optional[int]] = {
 # ---------------------------------------------------------------------------
 
 def init_db() -> None:
+    if os.path.dirname(DB_PATH):
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -121,6 +130,14 @@ def init_db() -> None:
                 display_name   TEXT    NOT NULL,
                 daily_hours    REAL    NOT NULL DEFAULT 8.0,
                 weekly_hours   REAL    NOT NULL DEFAULT 40.0
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discord_links (
+                member          TEXT    PRIMARY KEY,
+                discord_user_id INTEGER NOT NULL
             )
             """
         )
@@ -241,6 +258,37 @@ def _all_renormalize_ids() -> dict[str, Optional[int]]:
     return result
 
 
+# --- discord link helpers ---------------------------------------------------
+
+def save_discord_link(member: str, discord_user_id: int) -> None:
+    """Link a member (by display name) to a Discord user ID."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO discord_links (member, discord_user_id) VALUES (?, ?)
+            ON CONFLICT(member) DO UPDATE SET discord_user_id = excluded.discord_user_id
+            """,
+            (member, discord_user_id),
+        )
+        conn.commit()
+
+
+def get_discord_links() -> dict[str, int]:
+    """Return {member: discord_user_id}."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT member, discord_user_id FROM discord_links").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def _find_member(query: str) -> Optional[str]:
+    """Match *query* against member names (RU or EN, case-insensitive)."""
+    q = query.strip().casefold()
+    for name, en_name, _, _ in _all_members():
+        if q in (name.casefold(), en_name.casefold()):
+            return name
+    return None
+
+
 # --- preference helpers (report time per user) ------------------------------
 
 def save_preference(user_id: int, hour: int, minute: int) -> None:
@@ -305,6 +353,14 @@ def get_users_for_time(hour: int, minute: int) -> list[int]:
 def week_start(d: date) -> date:
     """Return the Monday of the week containing *d*."""
     return d - timedelta(days=d.weekday())
+
+
+def previous_workday(d: date) -> date:
+    """Return the last Mon–Fri day before *d* (Monday → Friday)."""
+    prev = d - timedelta(days=1)
+    while prev.weekday() >= 5:
+        prev -= timedelta(days=1)
+    return prev
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +498,53 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
+# Daily reports in Discord
+# ---------------------------------------------------------------------------
+
+async def fetch_report_authors(bot: commands.Bot, target_date: date) -> Optional[set[int]]:
+    """
+    Return Discord IDs of everyone who posted in REPORTS_CHANNEL_ID on *target_date*
+    (00:00–23:59 UTC+3). Any non-bot message counts as a report.
+
+    Text channel → channel history. Forum → messages in all posts (active + archived).
+    Returns None if the channel is not configured or can't be read (check is skipped).
+    """
+    if not REPORTS_CHANNEL_ID:
+        return None
+
+    start = datetime.combine(target_date, datetime.min.time(), tzinfo=MOSCOW)
+    end   = start + timedelta(days=1)
+    authors: set[int] = set()
+
+    async def collect(messageable) -> None:
+        async for msg in messageable.history(after=start, before=end, limit=None):
+            if not msg.author.bot:
+                authors.add(msg.author.id)
+
+    try:
+        channel = bot.get_channel(REPORTS_CHANNEL_ID) or await bot.fetch_channel(REPORTS_CHANNEL_ID)
+        if isinstance(channel, discord.ForumChannel):
+            threads = list(channel.threads)
+            # Archived threads come newest-archived first; older ones can't hold target_date messages
+            async for t in channel.archived_threads(limit=None):
+                if t.archive_timestamp and t.archive_timestamp < start:
+                    break
+                threads.append(t)
+            for t in threads:
+                if t.created_at and t.created_at >= end:
+                    continue
+                await collect(t)
+        else:
+            await collect(channel)
+    except Exception as exc:
+        log.exception("fetch_report_authors failed: %s", exc)
+        return None
+
+    log.info("Daily reports on %s: %d authors", target_date, len(authors))
+    return authors
+
+
+# ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -465,7 +568,9 @@ def format_daily_report(
     hours:          dict[str, float],
     day_offs:       set[str],
     filter_members: Optional[list[str]] = None,   # None → all members
+    report_authors: Optional[set[int]] = None,    # None → report check disabled
 ) -> str:
+    """Show only members with an hours shortfall or a missing daily report."""
     dow_ru = {
         "Monday": "Понедельник", "Tuesday": "Вторник", "Wednesday": "Среда",
         "Thursday": "Четверг",  "Friday": "Пятница",  "Saturday": "Суббота",
@@ -480,15 +585,36 @@ def format_daily_report(
     active = [(n, d, w) for n, _en, d, w in _all_members()
               if filter_members is None or n in filter_members]
 
-    lines: list[str] = []
+    links = get_discord_links()
+
+    lines:    list[str] = []
+    unlinked: list[str] = []
     for name, daily, _ in active:
-        worked = hours.get(name, 0.0)
-        off    = name in day_offs
-        emoji  = status_emoji(worked, daily if not off else worked, off)
-        if off:
-            lines.append(f"  {emoji} **{name}** — выходной")
-        else:
-            lines.append(f"  {emoji} **{name}** — {worked:.1f}h / {daily:.0f}h")
+        if name in day_offs:
+            continue                      # day off is not a problem
+        worked    = hours.get(name, 0.0)
+        emoji     = status_emoji(worked, daily, False)
+        uid       = links.get(name)
+        no_report = report_authors is not None and uid is not None and uid not in report_authors
+        if report_authors is not None and uid is None:
+            unlinked.append(name)
+        if emoji == "✅" and not no_report:
+            continue
+        line = f"  {emoji} **{name}** — {worked:.1f}h / {daily:.0f}h"
+        if no_report:
+            line += " · ❌ нет отчёта"
+        lines.append(line)
+
+    ok = len(active) - len(lines)
+    if not lines:
+        lines.append(f"  ✅ Все {ok} — всё ок")
+    elif ok:
+        lines.append(f"\n  Остальные {ok} — всё ок")
+    if unlinked:
+        lines.append(
+            f"\nℹ️ Отчёт не проверяется (нет привязки Discord): {', '.join(unlinked)}\n"
+            f"Привязать: `!linkdiscord <имя> @user`"
+        )
 
     return header + "\n".join(lines)
 
@@ -531,8 +657,29 @@ def _subscribe_prompt(current: list[str]) -> str:
     return "📋 У тебя пока нет подписки.\nВыбери сотрудников, чьи часы ты хочешь видеть:"
 
 
+SELECT_LIMIT      = 25   # Discord: max options per select
+MAX_SELECTS       = 4    # Discord: 5 rows per view, one is taken by the buttons
+
+
+def _member_chunks(context: str) -> list[list[tuple[str, str, float, float]]]:
+    """Split all members into chunks of SELECT_LIMIT (at most MAX_SELECTS chunks)."""
+    all_m = _all_members()
+    if len(all_m) > SELECT_LIMIT * MAX_SELECTS:
+        log.warning("Too many members (%d) — only first %d shown in %s",
+                    len(all_m), SELECT_LIMIT * MAX_SELECTS, context)
+    return [all_m[i:i + SELECT_LIMIT]
+            for i in range(0, min(len(all_m), SELECT_LIMIT * MAX_SELECTS), SELECT_LIMIT)]
+
+
+def _chunk_placeholder(default: str, i: int, chunk: list, total_chunks: int) -> str:
+    if total_chunks == 1:
+        return default
+    return f"Сотрудники {i * SELECT_LIMIT + 1}–{i * SELECT_LIMIT + len(chunk)}…"
+
+
 class SubscribeSelect(discord.ui.Select):
-    def __init__(self, current: list[str]) -> None:
+    def __init__(self, current: list[str],
+                 members: list[tuple[str, str, float, float]], placeholder: str) -> None:
         all_ids = _all_renormalize_ids()
         options = [
             discord.SelectOption(
@@ -540,16 +687,25 @@ class SubscribeSelect(discord.ui.Select):
                 value=name,
                 default=name in current,
             )
-            for name, en_name, _, _ in _all_members()
+            for name, en_name, _, _ in members
         ]
         super().__init__(
-            placeholder="Выберите сотрудников для отслеживания…",
+            placeholder=placeholder,
             min_values=0,
             max_values=len(options),
             options=options,
         )
+        self.touched = False
+
+    @property
+    def chosen(self) -> list[str]:
+        """Selected values; untouched select keeps its defaults (values would be empty)."""
+        if self.touched:
+            return list(self.values)
+        return [o.value for o in self.options if o.default]
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        self.touched = True
         await interaction.response.defer()
 
 
@@ -575,12 +731,20 @@ class SubscribeView(discord.ui.View):
     def __init__(self, user_id: int) -> None:
         super().__init__(timeout=300)
         self.user_id = user_id
-        self.select  = SubscribeSelect(get_subscription(user_id))
-        self.add_item(self.select)
+        current      = get_subscription(user_id)
+        chunks       = _member_chunks("!subscribe")
+        self.selects: list[SubscribeSelect] = []
+        for i, chunk in enumerate(chunks):
+            placeholder = _chunk_placeholder(
+                "Выберите сотрудников для отслеживания…", i, chunk, len(chunks))
+            select = SubscribeSelect(current, chunk, placeholder)
+            select.row = i
+            self.selects.append(select)
+            self.add_item(select)
 
-    @discord.ui.button(label="Сохранить", style=discord.ButtonStyle.success, emoji="💾")
+    @discord.ui.button(label="Сохранить", style=discord.ButtonStyle.success, emoji="💾", row=4)
     async def save(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        chosen = self.select.values
+        chosen = [n for s in self.selects for n in s.chosen]
         save_subscription(self.user_id, chosen)
         self.stop()
 
@@ -610,16 +774,16 @@ class SubscribeView(discord.ui.View):
 # ---------------------------------------------------------------------------
 
 class DayOffSelect(discord.ui.Select):
-    def __init__(self, target_date: date) -> None:
+    def __init__(self, target_date: date,
+                 members: list[tuple[str, str, float, float]], placeholder: str) -> None:
         self.target_date = target_date
-        all_m = _all_members()
         super().__init__(
-            placeholder="Выберите сотрудников…",
+            placeholder=placeholder,
             min_values=0,
-            max_values=min(len(all_m), 25),   # Discord caps at 25
+            max_values=len(members),
             options=[
                 discord.SelectOption(label=f"{en_name} ({name})", value=name)
-                for name, en_name, _, _ in all_m
+                for name, en_name, _, _ in members
             ],
         )
 
@@ -631,12 +795,18 @@ class DayOffView(discord.ui.View):
     def __init__(self, target_date: date) -> None:
         super().__init__(timeout=600)
         self.target_date = target_date
-        self.select      = DayOffSelect(target_date)
-        self.add_item(self.select)
+        chunks           = _member_chunks("day-off selector")
+        self.selects: list[DayOffSelect] = []
+        for i, chunk in enumerate(chunks):
+            select = DayOffSelect(
+                target_date, chunk, _chunk_placeholder("Выберите сотрудников…", i, chunk, len(chunks)))
+            select.row = i
+            self.selects.append(select)
+            self.add_item(select)
 
-    @discord.ui.button(label="Сохранить", style=discord.ButtonStyle.success, emoji="💾")
+    @discord.ui.button(label="Сохранить", style=discord.ButtonStyle.success, emoji="💾", row=4)
     async def save(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        chosen = self.select.values
+        chosen = [n for s in self.selects for n in s.values]
         save_day_offs(chosen, self.target_date)
         msg = (
             f"✅ Выходной на {self.target_date.strftime('%d.%m.%Y')} сохранён: {', '.join(chosen)}"
@@ -646,7 +816,7 @@ class DayOffView(discord.ui.View):
         self.stop()
         await interaction.response.edit_message(content=msg, view=None)
 
-    @discord.ui.button(label="Сегодня все работают", style=discord.ButtonStyle.secondary, emoji="🚫")
+    @discord.ui.button(label="Сегодня все работают", style=discord.ButtonStyle.secondary, emoji="🚫", row=4)
     async def no_day_off(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         save_day_offs([], self.target_date)
         self.stop()
@@ -660,22 +830,51 @@ class DayOffView(discord.ui.View):
 # Core routine
 # ---------------------------------------------------------------------------
 
+async def _collect_report_data(
+    bot:         commands.Bot,
+    report_date: date,
+) -> tuple[dict[str, float], set[str], Optional[dict[str, float]], Optional[set[int]]]:
+    """Fetch (hours, day_offs, week_hours, report_authors) once for all subscribers.
+
+    week_hours is fetched only when *report_date* is Friday (weekly summary day).
+    """
+    try:
+        hours = await fetch_hours(report_date)
+    except Exception as exc:
+        log.exception("fetch_hours failed: %s", exc)
+        hours = {name: 0.0 for name in MEMBER_NAMES}
+
+    day_offs = get_day_offs(report_date)
+
+    week_hours: Optional[dict[str, float]] = None
+    if report_date.weekday() == 4:
+        try:
+            week_hours = await fetch_week_hours(week_start(report_date))
+        except Exception as exc:
+            log.exception("fetch_week_hours failed: %s", exc)
+            week_hours = {name: 0.0 for name in MEMBER_NAMES}
+
+    report_authors = await fetch_report_authors(bot, report_date)
+    return hours, day_offs, week_hours, report_authors
+
+
 async def _deliver_report(
     bot:            commands.Bot,
     user_id:        int,
     report_date:    date,
     hours:          dict[str, float],
-    week_hours:     dict[str, float],
+    week_hours:     Optional[dict[str, float]],   # None → no weekly section
     day_offs:       set[str],
     filter_members: Optional[list[str]],
+    report_authors: Optional[set[int]] = None,
 ) -> None:
-    """Fetch user and send them the combined daily + weekly DM."""
+    """Fetch user and send them the daily DM (+ weekly progress on Fridays)."""
     try:
-        user        = await bot.fetch_user(user_id)
-        wb          = week_start(report_date)
-        daily_text  = format_daily_report(report_date, hours, day_offs, filter_members)
-        weekly_text = format_weekly_report(wb, week_hours, filter_members)
-        await user.send(daily_text + "\n\n" + weekly_text)
+        user = await bot.fetch_user(user_id)
+        text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors)
+        if week_hours is not None:
+            text += "\n\n" + format_weekly_report(week_start(report_date), week_hours, filter_members)
+        await user.send(text)
     except Exception as exc:
         log.exception("Failed to send report to user %s: %s", user_id, exc)
 
@@ -689,23 +888,10 @@ async def send_morning_routine(
     send the day-off selector to the PM.
     """
     today     = datetime.now(MOSCOW).date()
-    yesterday = report_date or (today - timedelta(days=1))
+    yesterday = report_date or previous_workday(today)
 
     # Fetch data once; all subscribers share the same raw numbers
-    try:
-        hours = await fetch_hours(yesterday)
-    except Exception as exc:
-        log.exception("fetch_hours failed: %s", exc)
-        hours = {name: 0.0 for name in MEMBER_NAMES}
-
-    day_offs = get_day_offs(yesterday)
-    wb       = week_start(yesterday)
-
-    try:
-        week_hours = await fetch_week_hours(wb)
-    except Exception as exc:
-        log.exception("fetch_week_hours failed: %s", exc)
-        week_hours = {name: 0.0 for name in MEMBER_NAMES}
+    hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
 
     # --- reports to all subscribers ---
     subscribers = get_all_subscribers()
@@ -713,7 +899,7 @@ async def send_morning_routine(
         log.warning("No subscribers found — nobody will receive a morning report.")
 
     for user_id, members in subscribers.items():
-        await _deliver_report(bot, user_id, yesterday, hours, week_hours, day_offs, members)
+        await _deliver_report(bot, user_id, yesterday, hours, week_hours, day_offs, members, authors)
 
     # --- day-off selector to PM only ---
     try:
@@ -736,7 +922,9 @@ async def check_report_time(bot: commands.Bot) -> None:
     now  = datetime.now(MOSCOW)
     h, m = now.hour, now.minute
     today     = now.date()
-    yesterday = today - timedelta(days=1)
+    if today.weekday() >= 5:          # no reports on Saturday / Sunday
+        return
+    yesterday = previous_workday(today)   # Monday → Friday
 
     user_ids              = get_users_for_time(h, m)
     pm_h, pm_m            = get_preference(PM_USER_ID)
@@ -747,26 +935,13 @@ async def check_report_time(bot: commands.Bot) -> None:
 
     # --- Fetch data once for all subscribers at this time slot ---
     if user_ids:
-        try:
-            hours = await fetch_hours(yesterday)
-        except Exception as exc:
-            log.exception("fetch_hours: %s", exc)
-            hours = {name: 0.0 for name in MEMBER_NAMES}
-
-        day_offs = get_day_offs(yesterday)
-        wb       = week_start(yesterday)
-
-        try:
-            week_hours = await fetch_week_hours(wb)
-        except Exception as exc:
-            log.exception("fetch_week_hours: %s", exc)
-            week_hours = {name: 0.0 for name in MEMBER_NAMES}
+        hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
 
         for user_id in user_ids:
             members = get_subscription(user_id)
             if members:
                 await _deliver_report(
-                    bot, user_id, yesterday, hours, week_hours, day_offs, members
+                    bot, user_id, yesterday, hours, week_hours, day_offs, members, authors
                 )
 
     # --- Day-off selector → PM (at PM's configured time) ---
@@ -848,24 +1023,11 @@ async def cmd_report(ctx: commands.Context) -> None:
     await ctx.message.add_reaction("⏳")
 
     today     = datetime.now(MOSCOW).date()
-    yesterday = today - timedelta(days=1)
+    yesterday = previous_workday(today)
 
-    try:
-        hours = await fetch_hours(yesterday)
-    except Exception as exc:
-        log.exception("fetch_hours: %s", exc)
-        hours = {name: 0.0 for name in MEMBER_NAMES}
+    hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
 
-    day_offs = get_day_offs(yesterday)
-    wb       = week_start(yesterday)
-
-    try:
-        week_hours = await fetch_week_hours(wb)
-    except Exception as exc:
-        log.exception("fetch_week_hours: %s", exc)
-        week_hours = {name: 0.0 for name in MEMBER_NAMES}
-
-    await _deliver_report(bot, user_id, yesterday, hours, week_hours, day_offs, members)
+    await _deliver_report(bot, user_id, yesterday, hours, week_hours, day_offs, members, authors)
     await ctx.message.add_reaction("✅")
 
 
@@ -914,6 +1076,7 @@ async def cmd_start(ctx: commands.Context) -> None:
         "`!members` — список всех доступных сотрудников\n"
         "`!addmember <id> <имя>` — добавить человека по Renormalize ID\n"
         "`!subscribe` — выбрать, чьи часы видеть в отчёте\n"
+        "`!linkdiscord <имя> @user` — привязать Discord для проверки daily-отчётов\n"
         "`!settime HH:MM` — время ежедневного отчёта (UTC+3, по умолчанию 09:00)\n"
         "`!report` — получить отчёт прямо сейчас\n"
         "`!weekly` — прогресс за текущую неделю\n"
@@ -960,18 +1123,48 @@ async def cmd_members(ctx: commands.Context) -> None:
     """!members — list all people available for tracking."""
     lines = ["**👥 Все доступные сотрудники:**\n"]
     all_ids = _all_renormalize_ids()
+    links   = get_discord_links()
+
+    def link_str(name: str) -> str:
+        uid = links.get(name)
+        return f" · <@{uid}>" if uid else " · ⛓️‍💥 нет Discord"
+
     for name, en_name, daily, _ in TEAM:
         rid = all_ids.get(name, "?")
-        lines.append(f"`{rid}` — {en_name}  ({daily:.0f}h/day)")
+        lines.append(f"`{rid}` — {en_name}  ({daily:.0f}h/day){link_str(name)}")
 
     custom = get_custom_members()
     if custom:
         lines.append("\n**Добавлены вручную:**")
         for rid, dname, daily, _ in custom:
-            lines.append(f"`{rid}` — {dname}  ({daily:.0f}h/day)")
+            lines.append(f"`{rid}` — {dname}  ({daily:.0f}h/day){link_str(dname)}")
 
     lines.append("\n➕ Добавить: `!addmember <renormalize_id> <имя>`")
-    await ctx.send("\n".join(lines))
+    lines.append("🔗 Привязать Discord: `!linkdiscord <имя> @user`")
+    # Show mentions without pinging people
+    await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.command(name="linkdiscord")
+async def cmd_linkdiscord(ctx: commands.Context, *, args: str = "") -> None:
+    """!linkdiscord <name> @user — link a member to their Discord account."""
+    mentions = ctx.message.mentions
+    name     = re.sub(r"<@!?\d+>", "", args).strip()
+    if not mentions or not name:
+        await ctx.send("❌ Формат: `!linkdiscord <имя> @user`  (например, `!linkdiscord Самвел @samvel`)")
+        return
+
+    member = _find_member(name)
+    if member is None:
+        await ctx.send(f"❌ Сотрудник «{name}» не найден. Список: `!members`")
+        return
+
+    user = mentions[0]
+    save_discord_link(member, user.id)
+    await ctx.send(
+        f"✅ **{member}** привязан к {user.mention}.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
 
 @bot.command(name="addmember")
