@@ -9,6 +9,9 @@ Morning routine (per-user configured time, default 09:00 UTC+3, Mon–Fri only):
      Weekly progress is appended only to the report for Friday.
   2. Day-off selector for TODAY — sent to PM only (at PM's configured time).
 
+Evening reminder (REMINDER_TIME, default 19:00 UTC+3, Mon–Fri): for subscribers who ran
+!reminders on, everyone in their subscription without a report today gets a DM.
+
 Commands (also available as slash commands with autocomplete: /subscribe, /report, …):
   !subscribe              — choose which team members appear in your daily reports
   !settime [HH:MM]        — set your daily report time (UTC+3). No arg = show current.
@@ -21,6 +24,7 @@ Commands (also available as slash commands with autocomplete: /subscribe, /repor
   !addperson <name> <@user|nick|id> — add a person without Renormalize (daily-report check only)
   !removemember <id|name> — remove a custom member (PM only)
   !setchannel [id]        — use this channel (or channel id) as YOUR daily-reports channel
+  !reminders [on|off]     — evening DM to people in your subscription who haven't posted today
   !findmembers            — list all Renormalize workspace members (PM only)
 """
 
@@ -53,6 +57,8 @@ RENORMALIZE_API_KEY = os.getenv("RENORMALIZE_TOKEN") or os.getenv("RENORMALIZE_A
 # Default channel with daily reports (text or forum) for subscribers without !setchannel.
 # 0 → no default (report check only for those who ran !setchannel).
 REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID") or 0)
+# Evening "you haven't posted your daily report" DM, HH:MM UTC+3
+REMINDER_HOUR, REMINDER_MINUTE = (int(x) for x in (os.getenv("REMINDER_TIME") or "19:00").split(":"))
 
 MOSCOW  = ZoneInfo("Europe/Moscow")
 DB_PATH = os.getenv("DB_PATH") or "hours.db"   # on Railway point it to the Volume, e.g. /data/hours.db
@@ -138,10 +144,11 @@ def init_db() -> None:
             )
             """
         )
-        try:
-            conn.execute("ALTER TABLE preferences ADD COLUMN reports_channel_id INTEGER")
-        except sqlite3.OperationalError:
-            pass                                    # column already exists
+        for column in ("reports_channel_id INTEGER", "reminders INTEGER NOT NULL DEFAULT 0"):
+            try:
+                conn.execute(f"ALTER TABLE preferences ADD COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass                                # column already exists
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS discord_links (
@@ -382,6 +389,36 @@ def get_reports_channel(user_id: int) -> int:
             (user_id,),
         ).fetchone()
     return (row[0] if row and row[0] else None) or REPORTS_CHANNEL_ID
+
+
+def save_reminders(user_id: int, enabled: bool) -> None:
+    """Turn evening reminders for the user's subscribed people on/off."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO preferences (discord_user_id, reminders) VALUES (?, ?)
+            ON CONFLICT(discord_user_id) DO UPDATE SET reminders = excluded.reminders
+            """,
+            (user_id, int(enabled)),
+        )
+        conn.commit()
+
+
+def get_reminders(user_id: int) -> bool:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT reminders FROM preferences WHERE discord_user_id = ?", (user_id,)
+        ).fetchone()
+    return bool(row and row[0])
+
+
+def get_reminder_subscribers() -> list[int]:
+    """Subscribers who turned reminders on."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT discord_user_id FROM preferences WHERE reminders = 1"
+        ).fetchall()
+    return [r[0] for r in rows]
 
 
 def get_preference(user_id: int) -> tuple[int, int]:
@@ -1077,6 +1114,40 @@ async def send_morning_routine(
         log.exception("Failed to send day-off selector to PM: %s", exc)
 
 
+async def send_reminders(bot: commands.Bot, day: date) -> None:
+    """DM everyone (from subscriptions with reminders on) who hasn't posted a report on *day*."""
+    links    = get_discord_links()
+    day_offs = get_day_offs(day)
+    cache:   dict[int, Optional[set[int]]] = {}
+    missing: dict[int, set[int]] = {}          # person's discord id → channels they missed
+
+    for sub_id in get_reminder_subscribers():
+        channel_id = get_reports_channel(sub_id)
+        if not channel_id:
+            continue
+        if channel_id not in cache:
+            cache[channel_id] = await fetch_report_authors(bot, day, channel_id)
+        authors = cache[channel_id]
+        if authors is None:
+            continue
+        for member in get_subscription(sub_id):
+            uid = links.get(member)
+            if uid and member not in day_offs and uid not in authors:
+                missing.setdefault(uid, set()).add(channel_id)
+
+    for uid, channels in missing.items():
+        where = ", ".join(f"<#{c}>" for c in sorted(channels))
+        try:
+            user = await bot.fetch_user(uid)
+            await user.send(
+                f"Привет! Не вижу твоего daily-отчёта за сегодня ({day.day} {MONTHS_GEN[day.month - 1]}) "
+                f"в {where}.\n-# Отчёт засчитывается до 23:59 UTC+3."
+            )
+        except Exception as exc:
+            log.exception("Failed to send reminder to %s: %s", uid, exc)
+    log.info("Reminders for %s: sent to %d people", day, len(missing))
+
+
 async def check_report_time(bot: commands.Bot) -> None:
     """
     Called every minute by the scheduler.
@@ -1089,6 +1160,9 @@ async def check_report_time(bot: commands.Bot) -> None:
     if today.weekday() >= 5:          # no reports on Saturday / Sunday
         return
     yesterday = previous_workday(today)   # Monday → Friday
+
+    if (h, m) == (REMINDER_HOUR, REMINDER_MINUTE):
+        await send_reminders(bot, today)
 
     user_ids              = get_users_for_time(h, m)
     pm_h, pm_m            = get_preference(PM_USER_ID)
@@ -1273,6 +1347,7 @@ async def cmd_start(ctx: commands.Context) -> None:
         "`!addperson <имя> <ID>` — добавить человека без Renormalize (только отчёты)\n"
         "`!setchannel` — написать в канале с отчётами, чтобы проверять именно его\n"
         "`!settime HH:MM` — время ежедневного отчёта (UTC+3, по умолчанию 09:00)\n"
+        "`!reminders on` — вечером напоминать людям из подписки, если они не написали отчёт\n"
         "`!report` — получить отчёт прямо сейчас\n"
         "`!weekly` — прогресс за текущую неделю\n"
         "`!start` — показать эту инструкцию снова\n\n"
@@ -1490,6 +1565,41 @@ async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[str] = None
         f"✅ Готово: в твоих отчётах проверяется канал **#{channel.name}** "
         f"на сервере **{guild.name}**."
     )
+
+
+@bot.hybrid_command(name="reminders", description="Вечерние напоминания тем, кто не написал отчёт (вкл/выкл)")
+@app_commands.describe(mode="on — включить, off — выключить; пусто — показать статус")
+@app_commands.rename(mode="режим")
+@app_commands.choices(mode=[app_commands.Choice(name="включить", value="on"),
+                            app_commands.Choice(name="выключить", value="off")])
+async def cmd_reminders(ctx: commands.Context, mode: Optional[str] = None) -> None:
+    """!reminders [on|off] — evening DM to people in your subscription who haven't posted a report."""
+    when = f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} UTC+3"
+    if mode is None:
+        state = "включены" if get_reminders(ctx.author.id) else "выключены"
+        await ctx.send(
+            f"🔔 Напоминания {state}. Если включены, в {when} по будням бот пишет в личку "
+            f"каждому из твоей подписки, кто ещё не написал отчёт в твоём канале.\n"
+            f"Включить: `/reminders on`, выключить: `/reminders off`",
+            ephemeral=True,
+        )
+        return
+
+    mode = mode.strip().lower()
+    if mode not in ("on", "off", "вкл", "выкл"):
+        await ctx.send("❌ Используй `on` или `off`.", ephemeral=True)
+        return
+    enabled = mode in ("on", "вкл")
+    save_reminders(ctx.author.id, enabled)
+    if enabled:
+        channel_id = get_reports_channel(ctx.author.id)
+        note = "" if channel_id else "\n⚠️ Канал с отчётами не задан — напиши `/setchannel` в нём."
+        await ctx.send(
+            f"🔔 Включено: в {when} по будням людям из твоей подписки без отчёта придёт напоминание.{note}",
+            ephemeral=True,
+        )
+    else:
+        await ctx.send("🔕 Напоминания выключены.", ephemeral=True)
 
 
 @bot.hybrid_command(name="settime", description="Время утреннего отчёта (UTC+3), например 09:00")
