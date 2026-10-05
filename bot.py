@@ -588,14 +588,23 @@ def status_emoji(worked: float, target: float, day_off: bool) -> str:
         return "✅"
     diff = worked - target
     if diff >= 0:      return "✅"
-    if diff >= -1:     return "⚠️"
+    if diff >= -1:     return "🟡"
     return "🔴"
 
 
-def progress_bar(done: float, total: float, width: int = 10) -> str:
-    ratio  = min(done / total, 1.0) if total else 0.0
-    filled = round(ratio * width)
-    return "█" * filled + "░" * (width - filled)
+MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+              "августа", "сентября", "октября", "ноября", "декабря"]
+WEEKDAYS   = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+
+
+def _h(hours: float) -> str:
+    """6.8 → '6,8' (Russian decimal comma)."""
+    return f"{hours:.1f}".replace(".", ",")
+
+
+def _day_title(d: date) -> str:
+    """date(2026, 10, 2) → 'Пятница, 2 октября'."""
+    return f"{WEEKDAYS[d.weekday()]}, {d.day} {MONTHS_GEN[d.month - 1]}"
 
 
 def format_daily_report(
@@ -606,16 +615,7 @@ def format_daily_report(
     report_authors: Optional[set[int]] = None,    # None → report check disabled
 ) -> str:
     """Show only members with an hours shortfall or a missing daily report."""
-    dow_ru = {
-        "Monday": "Понедельник", "Tuesday": "Вторник", "Wednesday": "Среда",
-        "Thursday": "Четверг",  "Friday": "Пятница",  "Saturday": "Суббота",
-        "Sunday": "Воскресенье",
-    }.get(report_date.strftime("%A"), report_date.strftime("%A"))
-
-    header = (
-        f"📊 **Отчёт за {report_date.strftime('%d.%m.%Y')} ({dow_ru})**\n"
-        + "━" * 38 + "\n"
-    )
+    header = f"### {_day_title(report_date)}\n"
 
     active = [(n, d, w) for n, _en, d, w in _all_members()
               if filter_members is None or n in filter_members]
@@ -635,20 +635,21 @@ def format_daily_report(
             unlinked.append(name)
         if emoji == "✅" and not no_report:
             continue
-        line = f"  {emoji} **{name}** — {worked:.1f}h / {daily:.0f}h"
+        marker = "🟡" if emoji == "✅" else emoji
+        line   = f"{marker} **{name}** · {_h(worked)} из {daily:g} ч"
         if no_report:
-            line += " · ❌ нет отчёта"
+            line += " · нет отчёта"
         lines.append(line)
 
     ok = len(active) - len(lines)
     if not lines:
-        lines.append(f"  ✅ Все {ok} — всё ок")
+        lines.append("Замечаний нет" if ok == 1 else f"Замечаний нет — все {ok} в норме")
     elif ok:
-        lines.append(f"\n  Остальные {ok} — всё ок")
+        lines.append(f"-# Остальные {ok} — без замечаний")
     if unlinked:
         lines.append(
-            f"\nℹ️ Отчёт не проверяется (нет привязки Discord): {', '.join(unlinked)}\n"
-            f"Привязать: `!linkdiscord <имя> @user`"
+            f"-# Отчёт не проверен, нет привязки Discord: {', '.join(unlinked)}. "
+            f"Привязать: `!linkdiscord <имя> <ID>`"
         )
 
     return header + "\n".join(lines)
@@ -659,10 +660,7 @@ def format_weekly_report(
     week_hours:     dict[str, float],
     filter_members: Optional[list[str]] = None,   # None → all members
 ) -> str:
-    header = (
-        f"📈 **Прогресс за неделю** (c {week_begin.strftime('%d.%m')})\n"
-        + "━" * 38 + "\n"
-    )
+    header = f"### Неделя с {week_begin.day} {MONTHS_GEN[week_begin.month - 1]}\n"
 
     active = [(n, d, w) for n, _en, d, w in _all_members()
               if filter_members is None or n in filter_members]
@@ -671,15 +669,11 @@ def format_weekly_report(
     for name, _, weekly in active:
         done      = week_hours.get(name, 0.0)
         remaining = max(weekly - done, 0.0)
-        bar       = progress_bar(done, weekly)
         pct       = int(min(done / weekly, 1.0) * 100) if weekly else 0
-        lines.append(
-            f"  **{name}**\n"
-            f"    `{bar}` {pct}%\n"
-            f"    {done:.1f}h / {weekly:.0f}h  (осталось: {remaining:.1f}h)"
-        )
+        tail      = f"осталось {_h(remaining)} ч" if remaining > 0 else "норма выполнена"
+        lines.append(f"**{name}** · {_h(done)} из {weekly:g} ч · {pct}%\n-# {tail}")
 
-    return header + "\n\n".join(lines)
+    return header + "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
