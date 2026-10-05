@@ -15,7 +15,7 @@ Commands:
   !dayoff [DD.MM]         — open day-off selector for a specific date (PM only)
   !weekly                 — show current-week progress for your subscribed members
   !members                — list all people available for tracking (with Discord links)
-  !linkdiscord <name> @user — link a member to their Discord account (for daily-report checks)
+  !linkdiscord <name> <@user|nick|id> — link a member to Discord (for daily-report checks)
   !addmember <id> <name>  — add a person by Renormalize ID (visible to everyone)
   !removemember <id>      — remove a custom member (PM only)
   !findmembers            — list all Renormalize workspace members (PM only)
@@ -281,11 +281,46 @@ def get_discord_links() -> dict[str, int]:
 
 
 def _find_member(query: str) -> Optional[str]:
-    """Match *query* against member names (RU or EN, case-insensitive)."""
-    q = query.strip().casefold()
-    for name, en_name, _, _ in _all_members():
+    """Match *query* against member names (RU or EN, case-insensitive).
+
+    Exact match first, otherwise a unique partial match (e.g. "Aleksey" → "Лёша Седин").
+    """
+    q = query.strip().strip("<>").casefold()
+    all_m = _all_members()
+    for name, en_name, _, _ in all_m:
         if q in (name.casefold(), en_name.casefold()):
             return name
+    partial = [name for name, en_name, _, _ in all_m
+               if q in name.casefold() or q in en_name.casefold()]
+    return partial[0] if len(partial) == 1 else None
+
+
+async def _resolve_discord_user(ctx: commands.Context, spec: str) -> Optional[discord.abc.User]:
+    """Resolve a mention, numeric ID or username (with or without @) to a Discord user.
+
+    In DMs "@nick" stays plain text (no real mention), so we also search the bot's servers.
+    """
+    if ctx.message.mentions:
+        return ctx.message.mentions[0]
+    m = re.fullmatch(r"<@!?(\d+)>|(\d{15,20})", spec)
+    if m:
+        try:
+            return await bot.fetch_user(int(m.group(1) or m.group(2)))
+        except discord.NotFound:
+            return None
+    nick = spec.lstrip("@").casefold()
+    if not nick:
+        return None
+    for guild in bot.guilds:
+        try:
+            found = await guild.query_members(query=nick, limit=10)
+        except Exception as exc:
+            log.warning("query_members failed in %s: %s", guild, exc)
+            continue
+        for member in found:
+            names = {member.name, member.global_name or "", member.nick or ""}
+            if nick in {n.casefold() for n in names}:
+                return member
     return None
 
 
@@ -1147,19 +1182,30 @@ async def cmd_members(ctx: commands.Context) -> None:
 
 @bot.command(name="linkdiscord")
 async def cmd_linkdiscord(ctx: commands.Context, *, args: str = "") -> None:
-    """!linkdiscord <name> @user — link a member to their Discord account."""
-    mentions = ctx.message.mentions
-    name     = re.sub(r"<@!?\d+>", "", args).strip()
-    if not mentions or not name:
-        await ctx.send("❌ Формат: `!linkdiscord <имя> @user`  (например, `!linkdiscord Самвел @samvel`)")
+    """!linkdiscord <name> <@user | nick | id> — link a member to their Discord account."""
+    parts = args.split()
+    if len(parts) < 2:
+        await ctx.send(
+            "❌ Формат: `!linkdiscord <имя> <@user | ник | Discord ID>`\n"
+            "Например: `!linkdiscord Самвел @samvel` или `!linkdiscord Aleksey Siedin 954344819092783184`"
+        )
         return
 
+    name, spec = " ".join(parts[:-1]), parts[-1]
     member = _find_member(name)
     if member is None:
-        await ctx.send(f"❌ Сотрудник «{name}» не найден. Список: `!members`")
+        await ctx.send(f"❌ Сотрудник «{name}» не найден (или подходит несколько). Список: `!members`")
         return
 
-    user = mentions[0]
+    user = await _resolve_discord_user(ctx, spec)
+    if user is None:
+        await ctx.send(
+            f"❌ Не нашёл пользователя Discord «{spec}».\n"
+            "Укажи ник (как в профиле, без пробелов) или Discord ID "
+            "(ПКМ по человеку → «Копировать ID», нужен режим разработчика)."
+        )
+        return
+
     save_discord_link(member, user.id)
     await ctx.send(
         f"✅ **{member}** привязан к {user.mention}.",
