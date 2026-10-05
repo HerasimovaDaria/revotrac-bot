@@ -4,7 +4,8 @@ Discord bot: daily team hours reports with day-off tracking and per-user subscri
 Morning routine (per-user configured time, default 09:00 UTC+3, Mon–Fri only):
   1. Personalized report for the PREVIOUS WORKDAY (on Monday — for Friday) — sent to every
      subscriber. Lists only their members with an hours shortfall (⚠️/🔴) or no daily report
-     in REPORTS_CHANNEL_ID (any message 00:00–23:59 UTC+3). People on a day off are skipped.
+     in the subscriber's own channel (!setchannel; default REPORTS_CHANNEL_ID), any message
+     00:00–23:59 UTC+3. People on a day off are skipped.
      Weekly progress is appended only to the report for Friday.
   2. Day-off selector for TODAY — sent to PM only (at PM's configured time).
 
@@ -17,7 +18,9 @@ Commands:
   !members                — list all people available for tracking (with Discord links)
   !linkdiscord <name> <@user|nick|id> — link a member to Discord (for daily-report checks)
   !addmember <id> <name>  — add a person by Renormalize ID (visible to everyone)
-  !removemember <id>      — remove a custom member (PM only)
+  !addperson <name> <@user|nick|id> — add a person without Renormalize (daily-report check only)
+  !removemember <id|name> — remove a custom member (PM only)
+  !setchannel [id]        — use this channel (or channel id) as YOUR daily-reports channel
   !findmembers            — list all Renormalize workspace members (PM only)
 """
 
@@ -46,7 +49,8 @@ TOKEN             = os.getenv("DISCORD_BOT_TOKEN", "")
 PM_USER_ID        = int(os.getenv("PM_USER_ID", "0"))
 # Support both variable names (RENORMALIZE_TOKEN is the real JWT, RENORMALIZE_API_KEY is legacy)
 RENORMALIZE_API_KEY = os.getenv("RENORMALIZE_TOKEN") or os.getenv("RENORMALIZE_API_KEY", "")
-# Channel with daily reports (text channel or forum). 0 → report check is disabled.
+# Default channel with daily reports (text or forum) for subscribers without !setchannel.
+# 0 → no default (report check only for those who ran !setchannel).
 REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID") or 0)
 
 MOSCOW  = ZoneInfo("Europe/Moscow")
@@ -133,6 +137,10 @@ def init_db() -> None:
             )
             """
         )
+        try:
+            conn.execute("ALTER TABLE preferences ADD COLUMN reports_channel_id INTEGER")
+        except sqlite3.OperationalError:
+            pass                                    # column already exists
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS discord_links (
@@ -254,8 +262,17 @@ def _all_renormalize_ids() -> dict[str, Optional[int]]:
     """Return RENORMALIZE_IDS merged with custom member IDs."""
     result: dict[str, Optional[int]] = dict(RENORMALIZE_IDS)
     for renorm_id, name, _, _ in get_custom_members():
-        result[name] = renorm_id
+        result[name] = renorm_id if renorm_id > 0 else None   # < 0 → report-only person
     return result
+
+
+def add_report_only_member(name: str, discord_user_id: int) -> None:
+    """Add a person without Renormalize: no hours, only the daily-report check.
+
+    Stored in custom_members with renormalize_id = -discord_user_id and 0h targets.
+    """
+    add_custom_member(-discord_user_id, name, daily=0.0, weekly=0.0)
+    save_discord_link(name, discord_user_id)
 
 
 # --- discord link helpers ---------------------------------------------------
@@ -342,6 +359,30 @@ def save_preference(user_id: int, hour: int, minute: int) -> None:
         conn.commit()
 
 
+def save_reports_channel(user_id: int, channel_id: int) -> None:
+    """Save the user's own daily-reports channel."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO preferences (discord_user_id, reports_channel_id) VALUES (?, ?)
+            ON CONFLICT(discord_user_id) DO UPDATE SET
+                reports_channel_id = excluded.reports_channel_id
+            """,
+            (user_id, channel_id),
+        )
+        conn.commit()
+
+
+def get_reports_channel(user_id: int) -> int:
+    """Return the user's daily-reports channel ID, falling back to REPORTS_CHANNEL_ID (0 = none)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT reports_channel_id FROM preferences WHERE discord_user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return (row[0] if row and row[0] else None) or REPORTS_CHANNEL_ID
+
+
 def get_preference(user_id: int) -> tuple[int, int]:
     """Return (hour, minute) for this user's report time. Default: 9:00."""
     with sqlite3.connect(DB_PATH) as conn:
@@ -406,6 +447,9 @@ def _mock_hours() -> dict[str, float]:
     """Fallback: random hours near each person's daily target."""
     result: dict[str, float] = {}
     for name, _en, daily, _ in _all_members():
+        if not daily:                       # report-only person
+            result[name] = 0.0
+            continue
         hours = random.gauss(daily, 1.5)
         result[name] = round(max(0.0, min(daily + 2, hours)), 2)
     return result
@@ -443,6 +487,9 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
 
         for name, _en, daily, _ in _all_members():
             renorm_id = all_ids.get(name)
+            if not daily:                   # report-only person
+                results[name] = 0.0
+                continue
             if renorm_id is None:
                 hours = random.gauss(daily, 1.5)
                 results[name] = round(max(0.0, min(daily + 2, hours)), 2)
@@ -536,15 +583,16 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
 # Daily reports in Discord
 # ---------------------------------------------------------------------------
 
-async def fetch_report_authors(bot: commands.Bot, target_date: date) -> Optional[set[int]]:
+async def fetch_report_authors(bot: commands.Bot, target_date: date,
+                               channel_id: int) -> Optional[set[int]]:
     """
-    Return Discord IDs of everyone who posted in REPORTS_CHANNEL_ID on *target_date*
+    Return Discord IDs of everyone who posted in *channel_id* on *target_date*
     (00:00–23:59 UTC+3). Any non-bot message counts as a report.
 
     Text channel → channel history. Forum → messages in all posts (active + archived).
     Returns None if the channel is not configured or can't be read (check is skipped).
     """
-    if not REPORTS_CHANNEL_ID:
+    if not channel_id:
         return None
 
     start = datetime.combine(target_date, datetime.min.time(), tzinfo=MOSCOW)
@@ -557,7 +605,7 @@ async def fetch_report_authors(bot: commands.Bot, target_date: date) -> Optional
                 authors.add(msg.author.id)
 
     try:
-        channel = bot.get_channel(REPORTS_CHANNEL_ID) or await bot.fetch_channel(REPORTS_CHANNEL_ID)
+        channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
         if isinstance(channel, discord.ForumChannel):
             threads = list(channel.threads)
             # Archived threads come newest-archived first; older ones can't hold target_date messages
@@ -575,7 +623,7 @@ async def fetch_report_authors(bot: commands.Bot, target_date: date) -> Optional
         log.exception("fetch_report_authors failed: %s", exc)
         return None
 
-    log.info("Daily reports on %s: %d authors", target_date, len(authors))
+    log.info("Daily reports on %s in %s: %d authors", target_date, channel_id, len(authors))
     return authors
 
 
@@ -633,6 +681,10 @@ def format_daily_report(
         no_report = report_authors is not None and uid is not None and uid not in report_authors
         if report_authors is not None and uid is None:
             unlinked.append(name)
+        if not daily:                     # report-only person: hours don't matter
+            if no_report:
+                lines.append(f"🟡 **{name}** · нет отчёта")
+            continue
         if emoji == "✅" and not no_report:
             continue
         marker = "🟡" if emoji == "✅" else emoji
@@ -667,12 +719,16 @@ def format_weekly_report(
 
     lines: list[str] = []
     for name, _, weekly in active:
+        if not weekly:                    # report-only person
+            continue
         done      = week_hours.get(name, 0.0)
         remaining = max(weekly - done, 0.0)
         pct       = int(min(done / weekly, 1.0) * 100) if weekly else 0
         tail      = f"осталось {_h(remaining)} ч" if remaining > 0 else "норма выполнена"
         lines.append(f"**{name}** · {_h(done)} из {weekly:g} ч · {pct}%\n-# {tail}")
 
+    if not lines:
+        return ""
     return header + "\n".join(lines)
 
 
@@ -712,7 +768,8 @@ class SubscribeSelect(discord.ui.Select):
         all_ids = _all_renormalize_ids()
         options = [
             discord.SelectOption(
-                label=f"{en_name}  (id {all_ids.get(name, '?')})",
+                label=(f"{en_name}  (id {all_ids[name]})" if all_ids.get(name)
+                       else f"{en_name}  (только отчёты)"),
                 value=name,
                 default=name in current,
             )
@@ -862,10 +919,12 @@ class DayOffView(discord.ui.View):
 async def _collect_report_data(
     bot:         commands.Bot,
     report_date: date,
-) -> tuple[dict[str, float], set[str], Optional[dict[str, float]], Optional[set[int]]]:
-    """Fetch (hours, day_offs, week_hours, report_authors) once for all subscribers.
+) -> tuple[dict[str, float], set[str], Optional[dict[str, float]], dict]:
+    """Fetch (hours, day_offs, week_hours, authors_cache) once for all subscribers.
 
     week_hours is fetched only when *report_date* is Friday (weekly summary day).
+    authors_cache starts empty and is filled per reports channel in _deliver_report,
+    so each channel is read once even when several subscribers share it.
     """
     try:
         hours = await fetch_hours(report_date)
@@ -883,8 +942,7 @@ async def _collect_report_data(
             log.exception("fetch_week_hours failed: %s", exc)
             week_hours = {name: 0.0 for name in MEMBER_NAMES}
 
-    report_authors = await fetch_report_authors(bot, report_date)
-    return hours, day_offs, week_hours, report_authors
+    return hours, day_offs, week_hours, {}
 
 
 async def _deliver_report(
@@ -895,14 +953,21 @@ async def _deliver_report(
     week_hours:     Optional[dict[str, float]],   # None → no weekly section
     day_offs:       set[str],
     filter_members: Optional[list[str]],
-    report_authors: Optional[set[int]] = None,
+    authors_cache:  dict,                         # {channel_id: authors} shared within one run
 ) -> None:
     """Fetch user and send them the daily DM (+ weekly progress on Fridays)."""
     try:
+        channel_id = get_reports_channel(user_id)
+        if channel_id not in authors_cache:
+            authors_cache[channel_id] = await fetch_report_authors(bot, report_date, channel_id)
+        report_authors = authors_cache[channel_id]
+
         user = await bot.fetch_user(user_id)
         text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors)
         if week_hours is not None:
-            text += "\n\n" + format_weekly_report(week_start(report_date), week_hours, filter_members)
+            weekly_text = format_weekly_report(week_start(report_date), week_hours, filter_members)
+            if weekly_text:
+                text += "\n\n" + weekly_text
         await user.send(text)
     except Exception as exc:
         log.exception("Failed to send report to user %s: %s", user_id, exc)
@@ -1105,7 +1170,9 @@ async def cmd_start(ctx: commands.Context) -> None:
         "`!members` — список всех доступных сотрудников\n"
         "`!addmember <id> <имя>` — добавить человека по Renormalize ID\n"
         "`!subscribe` — выбрать, чьи часы видеть в отчёте\n"
-        "`!linkdiscord <имя> @user` — привязать Discord для проверки daily-отчётов\n"
+        "`!linkdiscord <имя> <ID>` — привязать Discord для проверки daily-отчётов\n"
+        "`!addperson <имя> <ID>` — добавить человека без Renormalize (только отчёты)\n"
+        "`!setchannel` — написать в канале с отчётами, чтобы проверять именно его\n"
         "`!settime HH:MM` — время ежедневного отчёта (UTC+3, по умолчанию 09:00)\n"
         "`!report` — получить отчёт прямо сейчас\n"
         "`!weekly` — прогресс за текущую неделю\n"
@@ -1166,9 +1233,13 @@ async def cmd_members(ctx: commands.Context) -> None:
     if custom:
         lines.append("\n**Добавлены вручную:**")
         for rid, dname, daily, _ in custom:
-            lines.append(f"`{rid}` — {dname}  ({daily:.0f}h/day){link_str(dname)}")
+            if rid < 0:
+                lines.append(f"{dname}  (только отчёты){link_str(dname)}")
+            else:
+                lines.append(f"`{rid}` — {dname}  ({daily:.0f}h/day){link_str(dname)}")
 
     lines.append("\n➕ Добавить: `!addmember <renormalize_id> <имя>`")
+    lines.append("📝 Без часов, только отчёты: `!addperson <имя> <ID>`")
     lines.append("🔗 Привязать Discord: `!linkdiscord <имя> @user`")
     # Show mentions without pinging people
     await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
@@ -1223,17 +1294,102 @@ async def cmd_addmember(ctx: commands.Context, renorm_id: int, *, name: str) -> 
 
 
 @bot.command(name="removemember")
-async def cmd_removemember(ctx: commands.Context, renorm_id: int) -> None:
-    """!removemember <renormalize_id> — remove a custom member (PM only)."""
+async def cmd_removemember(ctx: commands.Context, *, arg: str) -> None:
+    """!removemember <renormalize_id | name> — remove a custom member (PM only)."""
     if ctx.author.id != PM_USER_ID:
         await ctx.message.add_reaction("🚫")
         return
 
-    deleted = remove_custom_member(renorm_id)
-    if deleted:
-        await ctx.send(f"✅ Сотрудник с id `{renorm_id}` удалён из списка.")
+    arg = arg.strip()
+    if arg.isdigit():
+        renorm_id = int(arg)
     else:
-        await ctx.send(f"⚠️ Сотрудник с id `{renorm_id}` не найден среди добавленных вручную.")
+        name      = _find_member(arg)
+        found     = [rid for rid, dname, _, _ in get_custom_members() if dname == name]
+        renorm_id = found[0] if found else 0
+
+    deleted = bool(renorm_id) and remove_custom_member(renorm_id)
+    if deleted:
+        await ctx.send(f"✅ «{arg}» удалён из списка.")
+    else:
+        await ctx.send(f"⚠️ «{arg}» не найден среди добавленных вручную.")
+
+
+@bot.command(name="addperson")
+async def cmd_addperson(ctx: commands.Context, *, args: str = "") -> None:
+    """!addperson <name> <@user | nick | id> — add a person without Renormalize (reports only)."""
+    parts = args.split()
+    if len(parts) < 2:
+        await ctx.send(
+            "❌ Формат: `!addperson <имя> <@user | ник | Discord ID>`\n"
+            "Например: `!addperson Daria Herasimova 954344819092783184`"
+        )
+        return
+
+    name, spec = " ".join(parts[:-1]), parts[-1]
+    if any(name.casefold() in (n.casefold(), en.casefold()) for n, en, _, _ in _all_members()):
+        await ctx.send(f"⚠️ «{name}» уже есть в списке. Привязать Discord: `!linkdiscord {name} <ID>`")
+        return
+
+    user = await _resolve_discord_user(ctx, spec)
+    if user is None:
+        await ctx.send(f"❌ Не нашёл пользователя Discord «{spec}». Лучше укажи Discord ID.")
+        return
+
+    add_report_only_member(name, user.id)
+    await ctx.send(
+        f"✅ Добавлен(а) **{name}** ({user.mention}) — без часов, проверяется только daily-отчёт.\n"
+        f"Теперь можно выбрать в `!subscribe`.",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@bot.command(name="setchannel")
+async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[int] = None) -> None:
+    """!setchannel [channel_id] — set YOUR daily-reports channel (run it in that channel or pass an ID)."""
+    user = await bot.fetch_user(ctx.author.id)
+
+    if channel_id is None and ctx.guild is None:
+        current = get_reports_channel(ctx.author.id)
+        await user.send(
+            (f"📝 Твой канал с отчётами: <#{current}> (`{current}`).\n" if current
+             else "📝 Канал с отчётами не задан — отчёты не проверяются.\n")
+            + "Изменить: напиши `!setchannel` прямо в нужном канале (или в посте форума), "
+              "либо `!setchannel <ID канала>`."
+        )
+        return
+
+    try:
+        if channel_id is None:
+            channel = ctx.channel
+        else:
+            channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+    except discord.HTTPException:
+        await user.send(f"❌ Канал `{channel_id}` не найден или у бота нет к нему доступа.")
+        return
+
+    # A command typed inside a thread / forum post → use the parent channel
+    if isinstance(channel, discord.Thread) and channel.parent is not None:
+        channel = channel.parent
+
+    guild = getattr(channel, "guild", None)
+    if guild is None:
+        await user.send("❌ Это не канал сервера. Напиши `!setchannel` в канале с отчётами.")
+        return
+    if not channel.permissions_for(guild.me).read_message_history:
+        await user.send(
+            f"⚠️ У бота нет права «Читать историю сообщений» в <#{channel.id}> — "
+            f"выдай его в настройках канала и повтори."
+        )
+        return
+
+    save_reports_channel(ctx.author.id, channel.id)
+    await user.send(
+        f"✅ Готово: в твоих отчётах проверяется канал **#{channel.name}** "
+        f"на сервере **{guild.name}**."
+    )
+    if ctx.guild:
+        await ctx.message.add_reaction("✅")
 
 
 @bot.command(name="settime")
