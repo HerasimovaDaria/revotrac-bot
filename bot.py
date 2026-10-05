@@ -9,7 +9,7 @@ Morning routine (per-user configured time, default 09:00 UTC+3, Mon–Fri only):
      Weekly progress is appended only to the report for Friday.
   2. Day-off selector for TODAY — sent to PM only (at PM's configured time).
 
-Commands:
+Commands (also available as slash commands with autocomplete: /subscribe, /report, …):
   !subscribe              — choose which team members appear in your daily reports
   !settime [HH:MM]        — set your daily report time (UTC+3). No arg = show current.
   !report                 — trigger your personalized morning report right now
@@ -35,6 +35,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
@@ -312,13 +313,13 @@ def _find_member(query: str) -> Optional[str]:
     return partial[0] if len(partial) == 1 else None
 
 
-async def _resolve_discord_user(ctx: commands.Context, spec: str) -> Optional[discord.abc.User]:
+async def _resolve_discord_user(spec: str, mentions: list = ()) -> Optional[discord.abc.User]:
     """Resolve a mention, numeric ID or username (with or without @) to a Discord user.
 
     In DMs "@nick" stays plain text (no real mention), so we also search the bot's servers.
     """
-    if ctx.message.mentions:
-        return ctx.message.mentions[0]
+    if mentions:
+        return mentions[0]
     m = re.fullmatch(r"<@!?(\d+)>|(\d{15,20})", spec)
     if m:
         try:
@@ -945,6 +946,30 @@ async def _collect_report_data(
     return hours, day_offs, week_hours, {}
 
 
+async def _build_report_text(
+    bot:            commands.Bot,
+    user_id:        int,
+    report_date:    date,
+    hours:          dict[str, float],
+    week_hours:     Optional[dict[str, float]],
+    day_offs:       set[str],
+    filter_members: Optional[list[str]],
+    authors_cache:  dict,
+) -> str:
+    """Daily report (+ weekly progress on Fridays) for one subscriber, using their reports channel."""
+    channel_id = get_reports_channel(user_id)
+    if channel_id not in authors_cache:
+        authors_cache[channel_id] = await fetch_report_authors(bot, report_date, channel_id)
+    report_authors = authors_cache[channel_id]
+
+    text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors)
+    if week_hours is not None:
+        weekly_text = format_weekly_report(week_start(report_date), week_hours, filter_members)
+        if weekly_text:
+            text += "\n\n" + weekly_text
+    return text
+
+
 async def _deliver_report(
     bot:            commands.Bot,
     user_id:        int,
@@ -957,17 +982,9 @@ async def _deliver_report(
 ) -> None:
     """Fetch user and send them the daily DM (+ weekly progress on Fridays)."""
     try:
-        channel_id = get_reports_channel(user_id)
-        if channel_id not in authors_cache:
-            authors_cache[channel_id] = await fetch_report_authors(bot, report_date, channel_id)
-        report_authors = authors_cache[channel_id]
-
+        text = await _build_report_text(bot, user_id, report_date, hours, week_hours,
+                                        day_offs, filter_members, authors_cache)
         user = await bot.fetch_user(user_id)
-        text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors)
-        if week_hours is not None:
-            weekly_text = format_weekly_report(week_start(report_date), week_hours, filter_members)
-            if weekly_text:
-                text += "\n\n" + weekly_text
         await user.send(text)
     except Exception as exc:
         log.exception("Failed to send report to user %s: %s", user_id, exc)
@@ -1068,6 +1085,15 @@ async def on_ready() -> None:
 
     init_db()
 
+    if scheduler.running:            # on_ready fires again after reconnects
+        return
+
+    try:
+        synced = await bot.tree.sync()
+        log.info("Synced %d slash commands", len(synced))
+    except Exception as exc:
+        log.exception("Slash command sync failed: %s", exc)
+
     scheduler.add_job(
         check_report_time,
         trigger="cron",
@@ -1083,53 +1109,77 @@ async def on_ready() -> None:
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+# Hybrid commands work both as "!cmd" and as "/cmd" (slash, with autocomplete in Discord).
+# Slash calls have no real message to react to, so replies go through these helpers.
 
-@bot.command(name="subscribe")
+async def _reply(ctx: commands.Context, content: str, **kwargs) -> None:
+    """Slash → answer in place (only you see it on servers). Prefix → DM (+📨 on servers)."""
+    if ctx.interaction:
+        await ctx.send(content, ephemeral=ctx.guild is not None, **kwargs)
+    else:
+        await ctx.author.send(content, **kwargs)
+        if ctx.guild:
+            await ctx.message.add_reaction("📨")
+
+
+async def _working(ctx: commands.Context) -> None:
+    """Show that a slow command is in progress."""
+    if ctx.interaction:
+        await ctx.defer(ephemeral=ctx.guild is not None)
+    else:
+        await ctx.message.add_reaction("⏳")
+
+
+async def _deny(ctx: commands.Context) -> None:
+    """PM-only command called by someone else."""
+    if ctx.interaction:
+        await ctx.send("🚫 Только для PM.", ephemeral=True)
+    else:
+        await ctx.message.add_reaction("🚫")
+
+
+@bot.hybrid_command(name="subscribe", description="Выбрать сотрудников для утреннего отчёта")
 async def cmd_subscribe(ctx: commands.Context) -> None:
     """!subscribe — choose which team members appear in your daily reports."""
     user_id = ctx.author.id
     current = get_subscription(user_id)
     view    = SubscribeView(user_id)
 
-    user = await bot.fetch_user(user_id)
-    await user.send(_subscribe_prompt(current), view=view)
-
-    if ctx.guild:
-        await ctx.message.add_reaction("📨")
+    await _reply(ctx, _subscribe_prompt(current), view=view)
 
 
-@bot.command(name="report")
+@bot.hybrid_command(name="report", description="Получить отчёт за прошлый рабочий день прямо сейчас")
 async def cmd_report(ctx: commands.Context) -> None:
     """!report — trigger your personalized morning report right now."""
     user_id = ctx.author.id
     members = get_subscription(user_id)
 
     if not members:
-        user = await bot.fetch_user(user_id)
-        await user.send(
+        await _reply(
+            ctx,
             "⚠️ У тебя нет подписки.\n"
-            "Используй `!subscribe`, чтобы выбрать, чьи часы ты хочешь видеть в отчёте."
+            "Используй `/subscribe`, чтобы выбрать, чьи часы ты хочешь видеть в отчёте."
         )
-        if ctx.guild:
-            await ctx.message.add_reaction("📨")
         return
 
-    await ctx.message.add_reaction("⏳")
+    await _working(ctx)
 
     today     = datetime.now(MOSCOW).date()
     yesterday = previous_workday(today)
 
     hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
 
-    await _deliver_report(bot, user_id, yesterday, hours, week_hours, day_offs, members, authors)
-    await ctx.message.add_reaction("✅")
+    text = await _build_report_text(bot, user_id, yesterday, hours, week_hours, day_offs, members, authors)
+    await _reply(ctx, text)
 
 
-@bot.command(name="dayoff")
+@bot.hybrid_command(name="dayoff", description="Отметить, кто не работает в выбранный день (только PM)")
+@app_commands.describe(date_str="Дата ДД.ММ, по умолчанию сегодня")
+@app_commands.rename(date_str="дата")
 async def cmd_dayoff(ctx: commands.Context, date_str: Optional[str] = None) -> None:
     """!dayoff [DD.MM] — open day-off selector for a given date (PM only)."""
     if ctx.author.id != PM_USER_ID:
-        await ctx.message.add_reaction("🚫")
+        await _deny(ctx)
         return
 
     if date_str:
@@ -1142,15 +1192,11 @@ async def cmd_dayoff(ctx: commands.Context, date_str: Optional[str] = None) -> N
     else:
         parsed = datetime.now(MOSCOW).date()
 
-    pm   = await bot.fetch_user(PM_USER_ID)
     view = DayOffView(parsed)
-    await pm.send(f"📅 **Кто {parsed.strftime('%d.%m.%Y')} не работает?**", view=view)
-
-    if ctx.guild:
-        await ctx.message.add_reaction("📨")
+    await _reply(ctx, f"📅 **Кто {parsed.strftime('%d.%m.%Y')} не работает?**", view=view)
 
 
-@bot.command(name="start")
+@bot.hybrid_command(name="start", description="Что умеет бот и как его настроить")
 async def cmd_start(ctx: commands.Context) -> None:
     """!start — onboarding: show what this bot does and how to set it up."""
     text = (
@@ -1176,45 +1222,37 @@ async def cmd_start(ctx: commands.Context) -> None:
         "`!settime HH:MM` — время ежедневного отчёта (UTC+3, по умолчанию 09:00)\n"
         "`!report` — получить отчёт прямо сейчас\n"
         "`!weekly` — прогресс за текущую неделю\n"
-        "`!start` — показать эту инструкцию снова\n"
+        "`!start` — показать эту инструкцию снова\n\n"
+        "💡 Все команды можно вызывать через `/` — Discord покажет подсказки.\n"
     )
-    user = await bot.fetch_user(ctx.author.id)
-    await user.send(text)
-    if ctx.guild:
-        await ctx.message.add_reaction("📨")
+    await _reply(ctx, text)
 
 
-@bot.command(name="weekly")
+@bot.hybrid_command(name="weekly", description="Прогресс по часам за текущую неделю")
 async def cmd_weekly(ctx: commands.Context) -> None:
     """!weekly — show current-week progress for your subscribed members."""
     user_id = ctx.author.id
     members = get_subscription(user_id)
 
     if not members:
-        user = await bot.fetch_user(user_id)
-        await user.send(
+        await _reply(
+            ctx,
             "⚠️ У тебя нет подписки.\n"
-            "Используй `!subscribe`, чтобы выбрать, чьи часы ты хочешь видеть."
+            "Используй `/subscribe`, чтобы выбрать, чьи часы ты хочешь видеть."
         )
-        if ctx.guild:
-            await ctx.message.add_reaction("📨")
         return
 
-    await ctx.message.add_reaction("⏳")
+    await _working(ctx)
 
     today      = datetime.now(MOSCOW).date()
     wb         = week_start(today)
     week_hours = await fetch_week_hours(wb)
-    text       = format_weekly_report(wb, week_hours, members)
+    text       = format_weekly_report(wb, week_hours, members) or "У твоих сотрудников нет недельной нормы часов."
 
-    user = await bot.fetch_user(user_id)
-    await user.send(text)
-
-    if ctx.guild:
-        await ctx.message.add_reaction("✅")
+    await _reply(ctx, text)
 
 
-@bot.command(name="members")
+@bot.hybrid_command(name="members", description="Список сотрудников и привязок Discord")
 async def cmd_members(ctx: commands.Context) -> None:
     """!members — list all people available for tracking."""
     lines = ["**👥 Все доступные сотрудники:**\n"]
@@ -1262,7 +1300,7 @@ async def cmd_linkdiscord(ctx: commands.Context, *, args: str = "") -> None:
         await ctx.send(f"❌ Сотрудник «{name}» не найден (или подходит несколько). Список: `!members`")
         return
 
-    user = await _resolve_discord_user(ctx, spec)
+    user = await _resolve_discord_user(spec, ctx.message.mentions)
     if user is None:
         await ctx.send(
             f"❌ Не нашёл пользователя Discord «{spec}».\n"
@@ -1278,7 +1316,9 @@ async def cmd_linkdiscord(ctx: commands.Context, *, args: str = "") -> None:
     )
 
 
-@bot.command(name="addmember")
+@bot.hybrid_command(name="addmember", description="Добавить сотрудника по Renormalize ID")
+@app_commands.describe(renorm_id="ID сотрудника в Renormalize", name="Имя для отчётов")
+@app_commands.rename(renorm_id="renormalize_id", name="имя")
 async def cmd_addmember(ctx: commands.Context, renorm_id: int, *, name: str) -> None:
     """!addmember <renormalize_id> <name> — add a person by their Renormalize ID."""
     name = name.strip()
@@ -1293,11 +1333,13 @@ async def cmd_addmember(ctx: commands.Context, renorm_id: int, *, name: str) -> 
     )
 
 
-@bot.command(name="removemember")
+@bot.hybrid_command(name="removemember", description="Удалить добавленного вручную сотрудника (только PM)")
+@app_commands.describe(arg="Renormalize ID или имя")
+@app_commands.rename(arg="кого")
 async def cmd_removemember(ctx: commands.Context, *, arg: str) -> None:
     """!removemember <renormalize_id | name> — remove a custom member (PM only)."""
     if ctx.author.id != PM_USER_ID:
-        await ctx.message.add_reaction("🚫")
+        await _deny(ctx)
         return
 
     arg = arg.strip()
@@ -1331,7 +1373,7 @@ async def cmd_addperson(ctx: commands.Context, *, args: str = "") -> None:
         await ctx.send(f"⚠️ «{name}» уже есть в списке. Привязать Discord: `!linkdiscord {name} <ID>`")
         return
 
-    user = await _resolve_discord_user(ctx, spec)
+    user = await _resolve_discord_user(spec, ctx.message.mentions)
     if user is None:
         await ctx.send(f"❌ Не нашёл пользователя Discord «{spec}». Лучше укажи Discord ID.")
         return
@@ -1344,14 +1386,18 @@ async def cmd_addperson(ctx: commands.Context, *, args: str = "") -> None:
     )
 
 
-@bot.command(name="setchannel")
-async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[int] = None) -> None:
+@bot.hybrid_command(name="setchannel", description="Сделать этот канал (или канал по ID) каналом с daily-отчётами")
+@app_commands.describe(channel_id="ID канала; пусто — текущий канал")
+@app_commands.rename(channel_id="id_канала")
+async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[str] = None) -> None:
     """!setchannel [channel_id] — set YOUR daily-reports channel (run it in that channel or pass an ID)."""
-    user = await bot.fetch_user(ctx.author.id)
+    if channel_id is not None and not channel_id.strip().isdigit():
+        await _reply(ctx, "❌ ID канала — это число. ПКМ по каналу → «Копировать ID канала».")
+        return
 
     if channel_id is None and ctx.guild is None:
         current = get_reports_channel(ctx.author.id)
-        await user.send(
+        await _reply(ctx, 
             (f"📝 Твой канал с отчётами: <#{current}> (`{current}`).\n" if current
              else "📝 Канал с отчётами не задан — отчёты не проверяются.\n")
             + "Изменить: напиши `!setchannel` прямо в нужном канале (или в посте форума), "
@@ -1363,9 +1409,10 @@ async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[int] = None
         if channel_id is None:
             channel = ctx.channel
         else:
-            channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+            cid     = int(channel_id)
+            channel = bot.get_channel(cid) or await bot.fetch_channel(cid)
     except discord.HTTPException:
-        await user.send(f"❌ Канал `{channel_id}` не найден или у бота нет к нему доступа.")
+        await _reply(ctx, f"❌ Канал `{channel_id}` не найден или у бота нет к нему доступа.")
         return
 
     # A command typed inside a thread / forum post → use the parent channel
@@ -1374,25 +1421,27 @@ async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[int] = None
 
     guild = getattr(channel, "guild", None)
     if guild is None:
-        await user.send("❌ Это не канал сервера. Напиши `!setchannel` в канале с отчётами.")
+        await _reply(ctx, "❌ Это не канал сервера. Напиши `!setchannel` в канале с отчётами.")
         return
     if not channel.permissions_for(guild.me).read_message_history:
-        await user.send(
+        await _reply(
+            ctx,
             f"⚠️ У бота нет права «Читать историю сообщений» в <#{channel.id}> — "
             f"выдай его в настройках канала и повтори."
         )
         return
 
     save_reports_channel(ctx.author.id, channel.id)
-    await user.send(
+    await _reply(
+        ctx,
         f"✅ Готово: в твоих отчётах проверяется канал **#{channel.name}** "
         f"на сервере **{guild.name}**."
     )
-    if ctx.guild:
-        await ctx.message.add_reaction("✅")
 
 
-@bot.command(name="settime")
+@bot.hybrid_command(name="settime", description="Время утреннего отчёта (UTC+3), например 09:00")
+@app_commands.describe(time_str="ЧЧ:ММ; пусто — показать текущее время")
+@app_commands.rename(time_str="время")
 async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> None:
     """!settime [HH:MM] — set your daily report time (UTC+3). No arg = show current."""
     if time_str is None:
@@ -1417,6 +1466,83 @@ async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> 
     await ctx.send(
         f"✅ Время ежедневного отчёта установлено: **{hour:02d}:{minute:02d} UTC+3**.\n"
         f"Если ещё не выбрал сотрудников — используй `!subscribe`."
+    )
+
+
+async def _member_autocomplete(
+    interaction: discord.Interaction, current: str,
+) -> list[app_commands.Choice[str]]:
+    cur = current.casefold()
+    return [
+        app_commands.Choice(name=f"{en} ({n})"[:100] if en != n else n[:100], value=n)
+        for n, en, _, _ in _all_members()
+        if cur in n.casefold() or cur in en.casefold()
+    ][:25]
+
+
+async def _discord_user_autocomplete(
+    interaction: discord.Interaction, current: str,
+) -> list[app_commands.Choice[str]]:
+    """Search people on all the bot's servers — works in DMs too, unlike Discord's user picker."""
+    query = current.lstrip("@").strip()
+    if not query or query.isdigit():
+        return []
+    seen: dict[int, str] = {}
+    for guild in bot.guilds:
+        try:
+            for m in await guild.query_members(query=query, limit=10):
+                seen.setdefault(m.id, f"{m.display_name} (@{m.name}) · {guild.name}"[:100])
+        except Exception as exc:
+            log.warning("autocomplete query_members failed in %s: %s", guild, exc)
+    return [app_commands.Choice(name=label, value=str(uid)) for uid, label in seen.items()][:25]
+
+
+@bot.tree.command(name="linkdiscord", description="Привязать сотрудника к его аккаунту Discord")
+@app_commands.describe(member="Сотрудник", user="Начни вводить ник — или вставь Discord ID")
+@app_commands.rename(member="сотрудник", user="discord")
+@app_commands.autocomplete(member=_member_autocomplete, user=_discord_user_autocomplete)
+async def slash_linkdiscord(interaction: discord.Interaction, member: str, user: str) -> None:
+    ephemeral = interaction.guild is not None
+    name      = _find_member(member)
+    if name is None:
+        await interaction.response.send_message(
+            f"❌ Сотрудник «{member}» не найден. Выбери из подсказок.", ephemeral=True)
+        return
+    target = await _resolve_discord_user(user)
+    if target is None:
+        await interaction.response.send_message(
+            f"❌ Не нашёл пользователя Discord «{user}». Выбери из подсказок или вставь ID.",
+            ephemeral=True)
+        return
+    save_discord_link(name, target.id)
+    await interaction.response.send_message(
+        f"✅ **{name}** привязан к {target.mention}.",
+        ephemeral=ephemeral, allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@bot.tree.command(name="addperson", description="Добавить человека без Renormalize (только проверка отчётов)")
+@app_commands.describe(name="Имя для отчётов", user="Начни вводить ник — или вставь Discord ID")
+@app_commands.rename(name="имя", user="discord")
+@app_commands.autocomplete(user=_discord_user_autocomplete)
+async def slash_addperson(interaction: discord.Interaction, name: str, user: str) -> None:
+    ephemeral = interaction.guild is not None
+    name      = name.strip()
+    if any(name.casefold() in (n.casefold(), en.casefold()) for n, en, _, _ in _all_members()):
+        await interaction.response.send_message(
+            f"⚠️ «{name}» уже есть в списке. Привязать Discord: `/linkdiscord`", ephemeral=True)
+        return
+    target = await _resolve_discord_user(user)
+    if target is None:
+        await interaction.response.send_message(
+            f"❌ Не нашёл пользователя Discord «{user}». Выбери из подсказок или вставь ID.",
+            ephemeral=True)
+        return
+    add_report_only_member(name, target.id)
+    await interaction.response.send_message(
+        f"✅ Добавлен(а) **{name}** ({target.mention}) — без часов, проверяется только daily-отчёт.\n"
+        f"Теперь можно выбрать в `/subscribe`.",
+        ephemeral=ephemeral, allowed_mentions=discord.AllowedMentions.none(),
     )
 
 
