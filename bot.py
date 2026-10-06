@@ -3,7 +3,7 @@ Discord bot: daily team hours reports with day-off tracking and per-user subscri
 
 Morning routine (per-user configured time, default 09:00 UTC+3, Mon–Fri only):
   1. Personalized report for the PREVIOUS WORKDAY (on Monday — for Friday) — sent to every
-     subscriber. Lists only their members with an hours shortfall (⚠️/🔴) or no daily report
+     subscriber. Lists only their members with an hours shortfall (🟡/🔴) or no daily report
      in the subscriber's own channel (!setchannel; default REPORTS_CHANNEL_ID), any message
      00:00–23:59 UTC+3. People on a day off are skipped.
      Weekly progress is appended only to the report for Friday.
