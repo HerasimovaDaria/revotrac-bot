@@ -10,12 +10,12 @@ from discord.ext import commands
 from client import bot
 from config import (
     ADDMEMBER_CANDIDATE_IDS,
-    MOSCOW,
     PM_USER_ID,
     REMINDER_HOUR,
     REMINDER_MINUTE,
     RENORMALIZE_API_KEY,
     TEAM,
+    UTC3,
     log,
 )
 from db import (
@@ -103,7 +103,7 @@ async def cmd_report(ctx: commands.Context) -> None:
 
     await _working(ctx)
 
-    today     = datetime.now(MOSCOW).date()
+    today     = datetime.now(UTC3).date()
     yesterday = previous_workday(today)
 
     hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
@@ -123,13 +123,13 @@ async def cmd_dayoff(ctx: commands.Context, date_str: Optional[str] = None) -> N
 
     if date_str:
         try:
-            today  = datetime.now(MOSCOW).date()
+            today  = datetime.now(UTC3).date()
             parsed = datetime.strptime(date_str, "%d.%m").replace(year=today.year).date()
         except ValueError:
             await ctx.send("❌ Invalid format. Example: `!dayoff 25.05`")
             return
     else:
-        parsed = datetime.now(MOSCOW).date()
+        parsed = datetime.now(UTC3).date()
 
     view = DayOffView(parsed)
     await _reply(ctx, f"📅 **Who's off on {parsed.strftime('%d.%m.%Y')}?**", view=view)
@@ -184,7 +184,7 @@ async def cmd_weekly(ctx: commands.Context) -> None:
 
     await _working(ctx)
 
-    today      = datetime.now(MOSCOW).date()
+    today      = datetime.now(UTC3).date()
     wb         = week_start(today)
     week_hours = await fetch_week_hours(wb)
     text       = format_weekly_report(wb, week_hours, members) or "None of your people have a weekly hour target."
@@ -602,7 +602,7 @@ async def cmd_test_api(ctx: commands.Context) -> None:
     await ctx.message.add_reaction("⏳")
     import httpx
 
-    today    = datetime.now(MOSCOW).date()
+    today    = datetime.now(UTC3).date()
     test_id  = 76632  # Samvel
     date_str = (today - timedelta(days=1)).isoformat()
 
