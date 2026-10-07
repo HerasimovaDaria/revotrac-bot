@@ -37,6 +37,7 @@ from db import (
     save_preference,
     save_reminders,
     save_reports_channel,
+    save_subscription,
 )
 from renormalize import fetch_all_renormalize_users, fetch_month_hours, fetch_week_hours
 from reports.formatting import format_monthly_report, format_weekly_report
@@ -337,6 +338,46 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
     )
 
 
+@bot.hybrid_command(name="addcandidates",
+                    description="Add everyone from the curated candidate list who isn't tracked yet (PM only)")
+async def cmd_addcandidates(ctx: commands.Context) -> None:
+    """!addcandidates — bulk-add the whole ADDMEMBER_CANDIDATE_IDS pool (PM only)."""
+    if ctx.author.id != PM_USER_ID:
+        await _deny(ctx)
+        return
+
+    await _working(ctx)
+
+    try:
+        users = await fetch_all_renormalize_users()
+    except Exception as exc:
+        log.exception("addcandidates: fetch_all_renormalize_users failed: %s", exc)
+        await ctx.send("❌ Couldn't fetch the list from Renormalize. Try again in a bit.")
+        return
+
+    existing_ids = {rid for rid in _all_renormalize_ids().values() if rid}
+    by_id = {u["id"]: u for u in users if u.get("status") == "active"}
+
+    added: list[str] = []
+    for renorm_id in ADDMEMBER_CANDIDATE_IDS:
+        if renorm_id in existing_ids:
+            continue
+        u = by_id.get(renorm_id)
+        if u is None:
+            continue
+        add_custom_member(renorm_id, u["name"])
+        added.append(u["name"])
+
+    if not added:
+        await ctx.send("✅ Everyone in the candidate list is already tracked — nothing to add.")
+        return
+
+    text = f"✅ Added {len(added)} people — they're now pickable in `/subscribe` (and `/track`):\n"
+    text += "\n".join(f"• {n}" for n in sorted(added))
+    for chunk in [text[i:i + 1900] for i in range(0, len(text), 1900)]:
+        await ctx.send(chunk)
+
+
 @bot.hybrid_command(name="removemember", description="Remove a manually-added person (PM only)")
 @app_commands.describe(arg="Renormalize ID or name")
 @app_commands.rename(arg="who")
@@ -517,6 +558,46 @@ async def _member_autocomplete(
         for n, en, _, _ in _all_members()
         if cur in n.casefold() or cur in en.casefold()
     ][:25]
+
+
+@bot.hybrid_command(name="track", description="Add one person to your subscription — searchable")
+@app_commands.describe(member="Start typing a name")
+@app_commands.rename(member="person")
+@app_commands.autocomplete(member=_member_autocomplete)
+async def cmd_track(ctx: commands.Context, *, member: str) -> None:
+    """!track <name> — add one person to your subscription (searchable, unlike /subscribe's checkbox list)."""
+    name = _find_member(member)
+    if name is None:
+        await ctx.send(f"❌ No match for «{member}» (or more than one). Try `/subscribe` to browse everyone.")
+        return
+
+    current = get_subscription(ctx.author.id)
+    if name in current:
+        await ctx.send(f"⚠️ **{name}** is already in your subscription.")
+        return
+
+    save_subscription(ctx.author.id, current + [name])
+    await ctx.send(f"✅ Added **{name}** to your subscription.")
+
+
+@bot.hybrid_command(name="untrack", description="Remove one person from your subscription — searchable")
+@app_commands.describe(member="Start typing a name")
+@app_commands.rename(member="person")
+@app_commands.autocomplete(member=_member_autocomplete)
+async def cmd_untrack(ctx: commands.Context, *, member: str) -> None:
+    """!untrack <name> — remove one person from your subscription (searchable)."""
+    name = _find_member(member)
+    if name is None:
+        await ctx.send(f"❌ No match for «{member}» (or more than one).")
+        return
+
+    current = get_subscription(ctx.author.id)
+    if name not in current:
+        await ctx.send(f"⚠️ **{name}** isn't in your subscription.")
+        return
+
+    save_subscription(ctx.author.id, [n for n in current if n != name])
+    await ctx.send(f"✅ Removed **{name}** from your subscription.")
 
 
 async def _discord_user_autocomplete(
