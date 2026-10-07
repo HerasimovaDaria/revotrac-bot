@@ -544,14 +544,32 @@ async def _member_autocomplete(
     ][:25]
 
 
-@bot.hybrid_command(name="track", description="Add one person to your subscription — searchable (or \"list\" to see who you track)")
-@app_commands.describe(member="Start typing a name, or type \"list\" to see your current subscription")
+async def _track_autocomplete(
+    interaction: discord.Interaction, current: str,
+) -> list[app_commands.Choice[str]]:
+    """Same as _member_autocomplete, plus a selectable "tracklist" entry — some Discord
+    clients won't let you submit free text that isn't in the suggestion list, so the
+    special value needs to actually show up as a pickable option, not just be typeable."""
+    cur = current.casefold().strip()
+    choices: list[app_commands.Choice[str]] = []
+    if not cur or "tracklist".startswith(cur):
+        choices.append(app_commands.Choice(name="📋 tracklist — show who you're tracking", value="tracklist"))
+    choices += [
+        app_commands.Choice(name=n[:100], value=n)
+        for n, en, _, _ in _all_members()
+        if cur in n.casefold() or cur in en.casefold()
+    ]
+    return choices[:25]
+
+
+@bot.hybrid_command(name="track", description="Add one person to your subscription — searchable (or \"tracklist\" to see who you track)")
+@app_commands.describe(member="Start typing a name, or pick \"tracklist\" to see your current subscription")
 @app_commands.rename(member="person")
-@app_commands.autocomplete(member=_member_autocomplete)
+@app_commands.autocomplete(member=_track_autocomplete)
 async def cmd_track(ctx: commands.Context, *, member: str) -> None:
     """!track <name> — add one person to your subscription (searchable, unlike /subscribe's
-    checkbox list). `!track list` shows who you're currently tracking."""
-    if member.strip().casefold() == "list":
+    checkbox list). `!track tracklist` shows who you're currently tracking."""
+    if member.strip().casefold() == "tracklist":
         current = get_subscription(ctx.author.id)
         if not current:
             await ctx.send("You're not tracking anyone yet. `/track <name>` to add someone.")
