@@ -112,8 +112,9 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 |---|---|
 | `/start` | Quick guide |
 | `/subscribe` | Choose who appears in your report (checkbox list — chunked past 25 people) |
-| `/track <person>` | Add one person to your subscription — searchable (`!track` also takes a comma-separated list for bulk adds) |
-| `/untrack <person>` | Remove one person from your subscription — searchable (same bulk-list support via `!untrack`) |
+| `/track <person>` | Add one person to your subscription — searchable |
+| `/untrack <person>` | Remove one person from your subscription — searchable |
+| `/tracklist` | Show who's in your subscription |
 | `/settime 09:00` | Your morning report time (UTC+2); no argument shows the current one |
 | `/report` | Get a report for the last workday right now |
 | `/weekly` | Hours progress for the current week |

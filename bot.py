@@ -20,6 +20,7 @@ Evening reminder (REMINDER_TIME, default 19:00 UTC+2, Mon–Fri): for subscriber
 Commands (also available as slash commands with autocomplete: /subscribe, /report, …):
   !subscribe              — choose which team members appear in your daily reports
   !track <name>           — add one person to your subscription (searchable)
+  !tracklist              — show who's in your subscription
   !untrack <name>         — remove one person from your subscription (searchable)
   !settime [HH:MM]        — set your daily report time (UTC+2). No arg = show current.
   !report                 — trigger your personalized morning report right now
