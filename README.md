@@ -29,25 +29,26 @@ Sent on workdays at the time each subscriber picked with `/settime` (default 09:
 
 1. **Which day.** The last workday: Tue–Fri → yesterday, Monday → Friday. Nothing is sent on weekends.
 2. **Hours.** Pulled from Renormalize (`/v1/time/progression`) and compared to the person's daily target:
-   - target met — fine;
-   - 🟡 short by less than an hour;
-   - 🔴 short by more than an hour.
+   - 🔴 **under-track** — more than 2h short of target;
+   - 🔵 **overtime** — more than 3h over target;
+   - anything in between (short by ≤2h, or over by ≤3h) counts as fine and isn't shown.
 3. **Daily report check.** The bot reads the subscriber's reports channel for that day (00:00–23:59 UTC+2):
    - any message from the person themselves counts;
    - if another bot posted the report (e.g. a "Daily Reports" bot), the author is read from an embed field named `Developer`/`Author`/`User` (or their Russian equivalents, for reports already posted that way) — if a `Date` field names a different day, it doesn't count;
    - both plain text channels and forums work (forums: all posts, including archived ones).
-4. **What shows up.** Anyone with a shortfall, a meaningful surplus (🔵 — more than an hour over target, i.e. overtime), or a missing report. Each flagged person also gets their month-to-date delta (ahead or behind, since the 1st of the month at their daily target × workdays elapsed) — someone can be fine for the month but short today, or the other way round. Everyone with no issue (on target, report posted) is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
+4. **What shows up.** Under-track (🔴) people are listed first; a missing report (🟡) is flagged the same way even for someone otherwise on target. Overtime (🔵) people are listed separately, under a **OverTimes:** heading at the bottom — kept apart so the main list stays about who needs attention. Each flagged person also gets their month-to-date delta (ahead or behind, since the 1st of the month at their daily target × workdays elapsed) — someone can be fine for the month but short today, or the other way round. Everyone with no issue (on target, report posted) is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
 5. **Weekly and monthly.** Friday's report also includes weekly hours progress for everyone (same as `/weekly`, on demand any day). `/monthly` is separate — month-to-date, **only people who are behind** (everyone else is omitted, not just summarized).
 
 Example:
 
 ```
 ### Friday, October 2
-🔴 David · 6.8 of 8h today · 4.2h behind this month · no report
-🟡 George · 7.5 of 8h today · on track this month
-🔵 Sergii · 10.2 of 8h today · over target today · 6.1h ahead this month
+🔴 David · 4.5 of 8h today · 4.2h behind this month · no report
 🟡 Jane Doe · no report
 -# The other 3 — no issues
+
+**OverTimes:**
+🔵 Sergii · 11.6 of 8h today · over target today · 6.1h ahead this month
 ```
 
 ### Midday "hasn't started" alert
