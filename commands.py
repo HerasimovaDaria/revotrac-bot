@@ -576,21 +576,29 @@ async def cmd_find_members(ctx: commands.Context) -> None:
 
     import httpx
 
+    # /members returns 501 Not Implemented — the working endpoint is /v1/users (paginated,
+    # no role/status filter; returns both active and inactive accounts).
     try:
+        members: list = []
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                "https://api.renormalize.com/members",
-                params={
-                    "roles":  "engineer,manager,sales,qa,field_worker",
-                    "status": "active,pending",
-                    "page":   1,
-                    "count":  200,
-                },
-                headers={"Authorization": f"Bearer {RENORMALIZE_API_KEY}"},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+            page = 1
+            while True:
+                resp = await client.get(
+                    "https://api.renormalize.com/v1/users",
+                    params={"page": page, "count": 200},
+                    headers=headers,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                data  = resp.json()
+                batch = data if isinstance(data, list) else data.get("data", [])
+                if not batch:
+                    break
+                members.extend(batch)
+                if len(batch) < 200:
+                    break
+                page += 1
     except Exception as exc:
         log.exception("findmembers API error: %s", exc)
         user = await bot.fetch_user(PM_USER_ID)
@@ -598,31 +606,20 @@ async def cmd_find_members(ctx: commands.Context) -> None:
         await _reply(ctx, "❌ Ошибка запроса к Renormalize, подробности — в личке.")
         return
 
-    # Handle various response shapes
-    members = (
-        data if isinstance(data, list)
-        else data.get("data", data.get("members", data.get("users", [])))
-    )
-
     if not members:
-        user = await bot.fetch_user(PM_USER_ID)
-        await user.send(
-            "⚠️ Пустой список или неизвестная структура ответа.\n"
-            f"Сырой ответ (первые 500 символов):\n```{str(data)[:500]}```"
-        )
-        await _reply(ctx, "⚠️ Пустой список или неизвестная структура ответа, подробности — в личке.")
+        await _reply(ctx, "⚠️ Renormalize вернул пустой список.")
         return
 
-    lines = ["👥 **Сотрудники в Renormalize (ID — Имя):**\n"]
-    for m in members:
-        uid  = m.get("id") or m.get("user_id") or "?"
-        name = (
+    lines = ["👥 **Сотрудники в Renormalize (ID — Имя — статус):**\n"]
+    for m in sorted(members, key=lambda x: (x.get("status", "?"), x.get("name", ""))):
+        uid    = m.get("id") or m.get("user_id") or "?"
+        name   = (
             m.get("full_name") or m.get("name")
             or f"{m.get('first_name','')} {m.get('last_name','')}".strip()
             or m.get("username") or "?"
         )
-        role = m.get("role") or (m.get("roles") or [""])[0]
-        lines.append(f"`{uid}` — **{name}** ({role})")
+        status = m.get("status", "?")
+        lines.append(f"`{uid}` — **{name}** ({status})")
 
     text = "\n".join(lines)
     user = await bot.fetch_user(PM_USER_ID)
@@ -630,5 +627,3 @@ async def cmd_find_members(ctx: commands.Context) -> None:
     for chunk in [text[i:i+1900] for i in range(0, len(text), 1900)]:
         await user.send(chunk)
     await _reply(ctx, f"✅ Список отправлен тебе в личку ({len(members)} чел.).")
-
-    await ctx.message.add_reaction("✅")
