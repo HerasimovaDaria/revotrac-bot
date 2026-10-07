@@ -183,12 +183,29 @@ def get_custom_members() -> list[tuple[int, str, float, float]]:
     return [(r[0], r[1], float(r[2]), float(r[3])) for r in rows]
 
 
+def _baked_in_ids() -> set[int]:
+    """Renormalize IDs already covered by TEAM or CANDIDATE_ROSTER — i.e. code, not DB."""
+    ids = {rid for rid in RENORMALIZE_IDS.values() if rid}
+    ids.update(rid for rid, _name in CANDIDATE_ROSTER)
+    return ids
+
+
+def _deduped_custom_members() -> list[tuple[int, str, float, float]]:
+    """get_custom_members(), minus anyone whose ID is already baked into TEAM/
+    CANDIDATE_ROSTER — a stale leftover from /addmember-ing someone before they were added
+    to CANDIDATE_ROSTER (same real person, now tracked twice under the same ID otherwise).
+    Report-only people (negative ID) are never baked in, so they're always kept.
+    """
+    baked = _baked_in_ids()
+    return [m for m in get_custom_members() if m[0] <= 0 or m[0] not in baked]
+
+
 def _all_members() -> list[tuple[str, str, float, float]]:
     """Return TEAM + CANDIDATE_ROSTER + custom members as (name, en_name, daily_h, weekly_h)."""
     result: list[tuple[str, str, float, float]] = list(TEAM)
     for renorm_id, name in CANDIDATE_ROSTER:
         result.append((name, name, 8.0, 40.0))
-    for renorm_id, name, daily, weekly in get_custom_members():
+    for renorm_id, name, daily, weekly in _deduped_custom_members():
         result.append((name, name, daily, weekly))
     return result
 
@@ -198,7 +215,7 @@ def _all_renormalize_ids() -> dict[str, Optional[int]]:
     result: dict[str, Optional[int]] = dict(RENORMALIZE_IDS)
     for renorm_id, name in CANDIDATE_ROSTER:
         result[name] = renorm_id
-    for renorm_id, name, _, _ in get_custom_members():
+    for renorm_id, name, _, _ in _deduped_custom_members():
         result[name] = renorm_id if renorm_id > 0 else None   # < 0 → report-only person
     return result
 
