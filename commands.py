@@ -10,6 +10,7 @@ from discord.ext import commands
 from client import bot
 from config import (
     ADDMEMBER_CANDIDATE_IDS,
+    CANDIDATE_ROSTER,
     LEAD_USER_ID,
     REMINDER_HOUR,
     REMINDER_MINUTE,
@@ -21,6 +22,7 @@ from config import (
 from db import (
     _all_members,
     _all_renormalize_ids,
+    _deduped_custom_members,
     add_allowed_user,
     add_custom_member,
     add_report_only_member,
@@ -201,7 +203,12 @@ async def cmd_members(ctx: commands.Context) -> None:
         rid = all_ids.get(name, "?")
         lines.append(f"`{rid}` — {en_name}  ({daily:.0f}h/day){link_str(name)}")
 
-    custom = get_custom_members()
+    if CANDIDATE_ROSTER:
+        lines.append("\n**Engineering roster:**")
+        for rid, name in sorted(CANDIDATE_ROSTER, key=lambda m: m[1]):
+            lines.append(f"`{rid}` — {name}  (8h/day){link_str(name)}")
+
+    custom = _deduped_custom_members()
     if custom:
         lines.append("\n**Added manually:**")
         for rid, dname, daily, _ in custom:
@@ -213,8 +220,11 @@ async def cmd_members(ctx: commands.Context) -> None:
     lines.append("\n➕ Add: `!addmember <renormalize_id> <name>`")
     lines.append("📝 No hours, reports only: `!addperson <name> <ID>`")
     lines.append("🔗 Link Discord: `!linkdiscord <name> @user`")
-    # Show mentions without pinging people
-    await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+
+    # Split if over Discord's 2000-char limit (easily happens with the full roster)
+    text = "\n".join(lines)
+    for chunk in [text[i:i + 1900] for i in range(0, len(text), 1900)]:
+        await ctx.send(chunk, allowed_mentions=discord.AllowedMentions.none())
 
 
 @bot.command(name="linkdiscord")
@@ -534,12 +544,22 @@ async def _member_autocomplete(
     ][:25]
 
 
-@bot.hybrid_command(name="track", description="Add one person to your subscription — searchable")
-@app_commands.describe(member="Start typing a name")
+@bot.hybrid_command(name="track", description="Add one person to your subscription — searchable (or \"list\" to see who you track)")
+@app_commands.describe(member="Start typing a name, or type \"list\" to see your current subscription")
 @app_commands.rename(member="person")
 @app_commands.autocomplete(member=_member_autocomplete)
 async def cmd_track(ctx: commands.Context, *, member: str) -> None:
-    """!track <name> — add one person to your subscription (searchable, unlike /subscribe's checkbox list)."""
+    """!track <name> — add one person to your subscription (searchable, unlike /subscribe's
+    checkbox list). `!track list` shows who you're currently tracking."""
+    if member.strip().casefold() == "list":
+        current = get_subscription(ctx.author.id)
+        if not current:
+            await ctx.send("You're not tracking anyone yet. `/track <name>` to add someone.")
+        else:
+            names = "\n".join(f"• {n}" for n in current)
+            await ctx.send(f"**You're tracking {len(current)}:**\n{names}")
+        return
+
     name = _find_member(member)
     if name is None:
         await ctx.send(f"❌ No match for «{member}» (or more than one). Try `/subscribe` to browse everyone.")
