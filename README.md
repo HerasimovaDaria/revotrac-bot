@@ -1,151 +1,209 @@
 # Renormalize tracker (revotrac-bot)
 
-Discord-бот, который каждое утро присылает подписчикам в личку короткий отчёт: у кого из их людей недоработка по часам в Renormalize и кто не написал daily-отчёт в Discord. Вечером он может напомнить тем, кто ещё не написал отчёт.
+A Discord bot that DMs each subscriber a short morning report: which of their people are
+short on hours in Renormalize, and who hasn't posted a daily report in Discord. In the
+evening it can also remind people who still haven't posted.
 
-Один файл — `bot.py` (discord.py + APScheduler + SQLite).
+Split across modules (`config.py`, `db.py`, `renormalize.py`, `reports/`, `ui/`,
+`routines.py`, `commands.py`) and wired together by `bot.py`. Stack: discord.py +
+APScheduler + SQLite.
 
 ---
 
-## Как это работает
+## How it works
 
-### Основные понятия
+### Core concepts
 
-| Понятие | Что это |
+| Concept | What it is |
 |---|---|
-| **Участник** | Человек, которого можно отслеживать. Он либо записан в коде (`TEAM`), либо добавлен командой `/addmember` (по Renormalize ID) или `/addperson` (без Renormalize, проверяются только отчёты). |
-| **Подписчик** | Пользователь Discord, который получает утренний отчёт. Через `/subscribe` он выбирает, по каким участникам. Подписчиков может быть сколько угодно, и у каждого свой список людей. |
-| **Привязка Discord** | Связь «участник → его аккаунт Discord» (`/linkdiscord`). Без неё бот не знает, чьи сообщения в канале считать отчётом этого участника. |
-| **Канал отчётов** | Канал, где пишут daily-отчёты. У каждого подписчика может быть свой (`/setchannel`); если не задан, используется `REPORTS_CHANNEL_ID`. Каналы могут быть на разных серверах, главное, чтобы бот был на этих серверах. |
-| **Выходной** | Отметка «участник не работает в этот день». Его не считают проблемным ни по часам, ни по отчёту. Выходные общие для всех подписчиков, их ставит админ (`PM_USER_ID`). |
+| **Tracked person** | Someone whose hours/reports can be followed. Either hardcoded in `TEAM` (`config.py`), or added at runtime with `/addmember` (Renormalize ID, hours tracked) or `/addperson` (no Renormalize, report check only). |
+| **Subscriber** | A Discord user who receives a morning report. Picks who to follow with `/subscribe`. Any number of subscribers, each with their own list. |
+| **Discord link** | "Tracked person → their Discord account" (`/linkdiscord`). Without it the bot can't tell which messages in a channel count as that person's report. |
+| **Reports channel** | Where daily reports get posted. Each subscriber can set their own (`/setchannel`); falls back to `REPORTS_CHANNEL_ID` if unset. Channels can be on different servers — the bot just needs to be a member of each one. |
+| **Day off** | A "this person isn't working today" flag. Skipped for both the hours and the report check. Shared across all subscribers, set by the PM. |
+| **Allowed user** | Who's permitted to talk to the bot at all — a separate concept from "tracked person" above. See **Access control** below. |
 
-### Утренний отчёт
+### Morning report
 
-Отчёт приходит по будням во время, которое подписчик выбрал через `/settime` (по умолчанию 09:00 UTC+3).
+Sent on workdays at the time each subscriber picked with `/settime` (default 09:00 UTC+3).
 
-1. **За какой день.** За прошлый рабочий день: во вторник–пятницу за вчера, в понедельник за пятницу. В субботу и воскресенье бот ничего не отправляет.
-2. **Часы.** Берутся из Renormalize (`/v1/time/progression`) и сравниваются с дневной нормой участника:
-   - норма выполнена — всё в порядке;
-   - 🟡 не хватает меньше часа;
-   - 🔴 не хватает больше часа.
-3. **Daily-отчёт.** Бот читает канал отчётов подписчика за этот день (00:00–23:59 UTC+3):
-   - любое сообщение участника засчитывается как отчёт;
-   - если отчёт опубликовал другой бот (например, C&C Daily Reports), автор берётся из поля карточки `Developer` (подходят также `Author`, `User`, `Разработчик`, `Сотрудник`). Если в поле `Date` указан другой день, отчёт не засчитывается;
-   - обычный текстовый канал и форум поддерживаются оба: у форума читаются все посты, включая архивные.
-4. **Что попадает в отчёт.** Только проблемные участники: недоработка по часам и/или «нет отчёта». Остальные сводятся в строку «Остальные N — без замечаний». Участники на выходном пропускаются. Отдельной строкой перечисляются те, у кого нет привязки Discord: их отчёт проверить нельзя.
-5. **Неделя.** К отчёту за пятницу добавляется недельный прогресс по часам. В любой день его можно посмотреть командой `/weekly`.
+1. **Which day.** The last workday: Tue–Fri → yesterday, Monday → Friday. Nothing is sent on weekends.
+2. **Hours.** Pulled from Renormalize (`/v1/time/progression`) and compared to the person's daily target:
+   - target met — fine;
+   - 🟡 short by less than an hour;
+   - 🔴 short by more than an hour.
+3. **Daily report check.** The bot reads the subscriber's reports channel for that day (00:00–23:59 UTC+3):
+   - any message from the person themselves counts;
+   - if another bot posted the report (e.g. a "Daily Reports" bot), the author is read from an embed field named `Developer`/`Author`/`User` (or their Russian equivalents, for reports already posted that way) — if a `Date` field names a different day, it doesn't count;
+   - both plain text channels and forums work (forums: all posts, including archived ones).
+4. **What shows up.** Only people with an issue: an hours shortfall and/or a missing report. Everyone else is summarized as "The other N — no issues". People on a day off are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
+5. **Weekly.** Friday's report also includes weekly hours progress. Any day, `/weekly` shows it on demand.
 
-Пример:
+Example:
 
 ```
-### Пятница, 2 октября
-🔴 Давид · 6,8 из 8 ч · нет отчёта
-🟡 Георгий · 7,5 из 8 ч
-🟡 Daria Herasimova · нет отчёта
--# Остальные 4 — без замечаний
+### Friday, October 2
+🔴 David · 6.8 of 8h · no report
+🟡 George · 7.5 of 8h
+🟡 Daria Herasimova · no report
+-# The other 4 — no issues
 ```
 
-### Вечерние напоминания
+### Evening reminders
 
-Подписчик включает их командой `/reminders on`. По будням в `REMINDER_TIME` (по умолчанию 19:00 UTC+3) бот проверяет канал отчётов этого подписчика за **сегодня**. Каждому человеку из его подписки, у кого отчёта нет, бот пишет в личку. Тем, кто на выходном, напоминание не приходит. Если человек есть в нескольких подписках, он получает одно сообщение.
+A subscriber turns them on with `/reminders on`. On workdays at `REMINDER_TIME` (default
+19:00 UTC+3), the bot checks that subscriber's reports channel for **today**. Everyone in
+their subscription without a report gets a DM. People on a day off are skipped. Someone in
+several subscriptions still gets just one message.
 
-Так руководитель ПМов получает утром список, кто забыл написать отчёт, а сами ПМы ещё вечером получают напоминание и успевают написать до полуночи.
+### Day off menu
 
-### Выходные
+Every workday, at the time the PM picked with `/settime`, the bot DMs them a "Who's off
+today?" menu. A day off for a different date is set with `/dayoff DD.MM`. The menu survives
+bot restarts and stays usable after its original 10-minute interaction window — choices are
+saved the moment you click, not just on "Save".
 
-Каждый будний день во время, выбранное админом (`PM_USER_ID`) через `/settime`, бот присылает ему в личку меню «Кто сегодня не работает?». Выходной на другую дату ставится через `/dayoff ДД.ММ`.
+### Access control
 
-### Зачем `PM_USER_ID` в переменных окружения
+Two layers:
 
-`PM_USER_ID` — это **админ бота** (один человек). Через переменную окружения он задаётся потому, что в боте нет регистрации и ролей: нужен хотя бы один заранее известный пользователь, которому можно доверить общие для всех действия. Что умеет только он:
+- **PM (`PM_USER_ID`)** — one fixed Discord ID, set once in the environment. Always has
+  access to everything, and is the only one who can run PM-only commands:
+  - `/dayoff` — set day offs (shared across all subscribers, so one person owns it)
+  - `/removemember` — remove a manually-added person
+  - `/findmembers` — list everyone in the Renormalize workspace with their ID
+  - `/alloweduser` — manage who else can use the bot (see below)
 
-- получать ежедневное меню выходных и ставить выходные (`/dayoff`). Выходные общие для всех подписчиков, поэтому ставит их один человек;
-- удалять участников (`/removemember`);
-- служебные команды `!findmembers` (список сотрудников Renormalize с ID) и `!testapi`.
+  Without `PM_USER_ID` set, the bot refuses to start.
 
-Без `PM_USER_ID` бот не запускается. Всё остальное (подписки, свой канал отчётов, напоминания) доступно любому пользователю.
+- **Allowed users** — everyone else needs explicit access, managed entirely at runtime
+  (no redeploy needed):
+  ```
+  /alloweduser add      — grant access (pick a Discord nickname or paste an ID)
+  /alloweduser remove   — revoke access
+  /alloweduser list     — show who currently has access
+  ```
+  Anyone not on this list (and not the PM) gets an explicit "🚫 You don't have access to
+  this bot" instead of being silently ignored.
+
+  The first time this feature runs, everyone who already had a subscription or a saved
+  preference gets added automatically, so turning this on doesn't lock out the existing
+  team. From then on it's manual.
+
+### Who `/addmember` can suggest
+
+`/addmember`'s name search (both the `/`-autocomplete and `!addmember`'s text matching) only
+searches a curated candidate pool — `ADDMEMBER_CANDIDATE_IDS` in `config.py` — not the whole
+Renormalize workspace. This keeps sales/HR/other departments' names and emails from being
+surfaced to everyone with bot access. If you already know someone's Renormalize ID, you can
+still add them directly (`/addmember <id>`) even if they're outside this pool — the
+restriction only applies to search-by-name. To change who's suggestable, edit the set in
+`config.py` and redeploy.
 
 ---
 
-## Команды
+## Commands
 
-Все команды работают и через `/` (с подсказками в Discord), и через `!`. Через `/` на сервере ответ видите только вы; через `!` бот отвечает в личку.
+Every command works both as `/command` (autocomplete, hints in Discord) and `!command`. On a
+server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 
-| Команда | Что делает |
+| Command | What it does |
 |---|---|
-| `/start` | Краткая инструкция |
-| `/subscribe` | Выбрать участников для своего отчёта |
-| `/settime 09:00` | Время утреннего отчёта (UTC+3); без параметра показывает текущее |
-| `/report` | Получить отчёт за прошлый рабочий день прямо сейчас |
-| `/weekly` | Прогресс по часам за текущую неделю |
-| `/members` | Все участники и их привязки Discord |
-| `/addmember <renormalize_id> <имя>` | Добавить участника с часами из Renormalize |
-| `/addperson <имя> <discord>` | Добавить участника без Renormalize, проверяется только отчёт (например, ПМа) |
-| `/linkdiscord <сотрудник> <discord>` | Привязать участника к аккаунту Discord. В `/`-версии есть подсказки по имени и нику |
-| `/setchannel [id_канала]` | Выбрать свой канал отчётов: вызвать в нужном канале или передать ID |
-| `/reminders on\|off` | Вечерние напоминания людям из своей подписки |
-| `/dayoff [ДД.ММ]` | Отметить выходные (только админ) |
-| `/removemember <id или имя>` | Удалить участника, добавленного вручную (только админ) |
-| `!findmembers` | Список сотрудников Renormalize с ID (только админ) |
+| `/start` | Quick guide |
+| `/subscribe` | Choose who appears in your report |
+| `/settime 09:00` | Your morning report time (UTC+3); no argument shows the current one |
+| `/report` | Get a report for the last workday right now |
+| `/weekly` | Hours progress for the current week |
+| `/members` | Everyone tracked, plus their Discord links |
+| `/addmember <person>` | Add someone — start typing a name for live suggestions, or paste a Renormalize ID directly |
+| `/addperson <name> <discord>` | Add someone without Renormalize — only their daily report is checked |
+| `/linkdiscord <person> <discord>` | Link a tracked person to a Discord account (autocompletes both fields) |
+| `/setchannel [channel_id]` | Set your reports channel — run it in the target channel, or pass an ID |
+| `/reminders on\|off` | Evening reminders for your subscription |
+| `/dayoff [DD.MM]` | Mark who's off (**PM only**) |
+| `/removemember <id or name>` | Remove a manually-added person (**PM only**) |
+| `/findmembers` | List everyone in Renormalize with their ID and status (**PM only**) |
+| `/alloweduser add\|remove\|list [discord]` | Manage who can use the bot (**PM only**) |
+
+(`!testapi` also exists — a one-off debugging command with hardcoded test IDs/dates,
+`!`-only and PM-only. Not meant for regular use.)
 
 ---
 
-## Типовые сценарии
+## Typical scenarios
 
-**Руководитель хочет знать, кто из ПМов не написал отчёт**
-1. Добавить ПМов: `/addperson <имя> <discord>`.
-2. Руководитель: `/subscribe` (выбрать ПМов) → `/setchannel` в канале ПМов → `/reminders on`, если ПМам нужны вечерние напоминания.
+**A director wants to know which PMs haven't posted their own report**
+1. Add the PMs: `/addperson <name> <discord>`.
+2. Director: `/subscribe` (pick the PMs) → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
 
-**ПМ следит за часами и отчётами своих разработчиков**
-1. Если разработчика нет в `/members`, добавить: `/addmember <renormalize_id> <имя>`.
-2. Привязать разработчиков к Discord: `/linkdiscord`.
-3. ПМ: `/subscribe` → `/setchannel` в канале разработчиков → `/settime`.
+**A PM tracks their developers' hours and reports**
+1. If a developer isn't in `/members` yet, add them: `/addmember` (type their name, pick the suggestion).
+2. Link them to Discord: `/linkdiscord`.
+3. PM: `/subscribe` → `/setchannel` in the devs' channel → `/settime`.
+
+**Granting bot access to a new PM/director**
+1. PM: `/alloweduser add`, pick the person from the nickname suggestions (or paste their Discord ID).
+2. They need to share at least one Discord server with the bot — Discord doesn't allow DMs between users/bots without one. If they're not already on a shared server, either add them to the team's server, or set up a small private server with just them and the bot invited to it.
 
 ---
 
-## Установка и деплой
+## Setup and deployment
 
 ### Discord Developer Portal
-1. Создать приложение и бота, скопировать токен.
-2. **Bot → Privileged Gateway Intents:** включить **Message Content Intent**. Без него бот не видит команды на `!` и содержимое карточек других ботов.
-3. **OAuth2 → URL Generator:** отметить scopes `bot` и `applications.commands`, permissions — View Channels, Send Messages, Read Message History, Add Reactions. По полученной ссылке добавить бота на каждый нужный сервер.
-4. В каждом канале отчётов у бота должны быть права **Просматривать канал** и **Читать историю сообщений**.
+1. Create an application and bot, copy the token.
+2. **Bot → Privileged Gateway Intents:** enable **Message Content Intent**. Without it the bot can't see `!` commands or other bots' embed content.
+3. **OAuth2 → URL Generator:** check scopes `bot` and `applications.commands`; permissions — View Channels, Send Messages, Read Message History, Add Reactions. Use the generated link to add the bot to each server you need.
+4. In every reports channel, the bot needs **View Channel** and **Read Message History**.
 
-### Переменные окружения
+### Environment variables
 
-| Переменная | Обязательна | Описание |
+| Variable | Required | Description |
 |---|---|---|
-| `DISCORD_BOT_TOKEN` | да | Токен бота |
-| `PM_USER_ID` | да | Discord ID админа (см. выше) |
-| `RENORMALIZE_TOKEN` | желательно | JWT для API Renormalize. Без него часы случайные (тестовый режим) |
-| `REPORTS_CHANNEL_ID` | нет | Канал отчётов по умолчанию, для тех, кто не вызвал `/setchannel` |
-| `DB_PATH` | нет | Путь к базе SQLite, по умолчанию `hours.db` |
-| `REMINDER_TIME` | нет | Время вечерних напоминаний `ЧЧ:ММ` (UTC+3), по умолчанию `19:00` |
+| `DISCORD_BOT_TOKEN` | yes | Bot token |
+| `PM_USER_ID` | yes | The admin's Discord ID (see **Access control** above) |
+| `RENORMALIZE_TOKEN` | recommended | Renormalize API JWT. Without it, hours are randomized (mock mode) |
+| `REPORTS_CHANNEL_ID` | no | Default reports channel for subscribers who haven't run `/setchannel` |
+| `DB_PATH` | no | SQLite file path, defaults to `hours.db` |
+| `REMINDER_TIME` | no | Evening reminder time `HH:MM` (UTC+3), defaults to `19:00` |
 
-Пример — в `.env.example`.
+See `.env.example` for a template.
 
-### Локально
+### Running locally
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # заполнить значения
+cp .env.example .env   # fill in the values
 python3 bot.py
 ```
 
+⚠️ If `DISCORD_BOT_TOKEN` is the same token already deployed elsewhere (e.g. on Railway),
+**don't run this locally while that deployment is live** — two processes on one token means
+duplicated replies and duplicated scheduled DMs to real people.
+
 ### Railway
-1. Подключить репозиторий: Railway сам запускает `worker: python3 bot.py` из `Procfile` при каждом пуше в `main`.
-2. Задать переменные окружения (таблица выше).
-3. **Обязательно подключить Volume**, например с путём `/data`, и задать `DB_PATH=/data/hours.db`. Без этого подписки, привязки, каналы и выходные стираются при каждом деплое.
+1. Connect the repo: Railway runs `worker: python3 bot.py` from `Procfile` on every push to `main`.
+2. Set the environment variables (table above).
+3. **Attach a Volume** (e.g. mounted at `/data`) and set `DB_PATH=/data/hours.db`. Without
+   it, subscriptions, links, channels, day offs and the allowed-users list all get wiped on
+   every deploy.
+4. Merging more than one PR in quick succession can race Railway's own build/deploy pipeline
+   — the older commit can end up "winning" and staying active even though a newer, working
+   build finished first. Wait for "Deployment successful" before merging the next PR.
 
 ---
 
-## Данные (SQLite)
+## Data (SQLite)
 
-| Таблица | Что хранит |
+| Table | What it stores |
 |---|---|
-| `subscriptions` | подписчик → участники в его отчёте |
-| `preferences` | время отчёта, свой канал отчётов, включены ли напоминания |
-| `custom_members` | участники, добавленные через `/addmember` и `/addperson` (у вторых отрицательный ID и норма 0 ч) |
-| `discord_links` | участник → Discord ID |
-| `day_offs` | участник + дата выходного |
+| `subscriptions` | subscriber → people in their report |
+| `preferences` | report time, own reports channel, reminders on/off |
+| `custom_members` | people added via `/addmember` / `/addperson` (the latter get a negative ID and a 0h target) |
+| `discord_links` | tracked person → Discord ID |
+| `day_offs` | tracked person + day-off date |
+| `allowed_users` | Discord IDs allowed to use the bot (besides the PM) — managed with `/alloweduser` |
 
-Участники из кода (`TEAM` и `RENORMALIZE_IDS` в `bot.py`) в базе не хранятся. Чтобы изменить их список или норму, нужно править код.
+People defined in code (`TEAM` and `RENORMALIZE_IDS` in `config.py`) aren't stored in the
+database — the `TEAM` names are also used as primary keys in several of the tables above, so
+renaming them in code would orphan every existing row referencing the old name. To change the
+core roster or someone's hour target, edit `config.py` and redeploy.
