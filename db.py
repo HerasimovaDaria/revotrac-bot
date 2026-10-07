@@ -9,7 +9,7 @@ import os
 import sqlite3
 from typing import Optional
 
-from config import DB_PATH, RENORMALIZE_IDS, REPORTS_CHANNEL_ID, TEAM
+from config import CANDIDATE_ROSTER, DB_PATH, RENORMALIZE_IDS, REPORTS_CHANNEL_ID, TEAM
 
 
 def init_db() -> None:
@@ -167,16 +167,20 @@ def get_custom_members() -> list[tuple[int, str, float, float]]:
 
 
 def _all_members() -> list[tuple[str, str, float, float]]:
-    """Return TEAM + custom members as (name, en_name, daily_h, weekly_h)."""
+    """Return TEAM + CANDIDATE_ROSTER + custom members as (name, en_name, daily_h, weekly_h)."""
     result: list[tuple[str, str, float, float]] = list(TEAM)
+    for renorm_id, name in CANDIDATE_ROSTER:
+        result.append((name, name, 8.0, 40.0))
     for renorm_id, name, daily, weekly in get_custom_members():
         result.append((name, name, daily, weekly))
     return result
 
 
 def _all_renormalize_ids() -> dict[str, Optional[int]]:
-    """Return RENORMALIZE_IDS merged with custom member IDs."""
+    """Return RENORMALIZE_IDS merged with CANDIDATE_ROSTER and custom member IDs."""
     result: dict[str, Optional[int]] = dict(RENORMALIZE_IDS)
+    for renorm_id, name in CANDIDATE_ROSTER:
+        result[name] = renorm_id
     for renorm_id, name, _, _ in get_custom_members():
         result[name] = renorm_id if renorm_id > 0 else None   # < 0 → report-only person
     return result

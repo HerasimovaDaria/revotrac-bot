@@ -37,6 +37,7 @@ from db import (
     save_preference,
     save_reminders,
     save_reports_channel,
+    save_subscription,
 )
 from renormalize import fetch_all_renormalize_users, fetch_month_hours, fetch_week_hours
 from reports.formatting import format_monthly_report, format_weekly_report
@@ -517,6 +518,46 @@ async def _member_autocomplete(
         for n, en, _, _ in _all_members()
         if cur in n.casefold() or cur in en.casefold()
     ][:25]
+
+
+@bot.hybrid_command(name="track", description="Add one person to your subscription — searchable")
+@app_commands.describe(member="Start typing a name")
+@app_commands.rename(member="person")
+@app_commands.autocomplete(member=_member_autocomplete)
+async def cmd_track(ctx: commands.Context, *, member: str) -> None:
+    """!track <name> — add one person to your subscription (searchable, unlike /subscribe's checkbox list)."""
+    name = _find_member(member)
+    if name is None:
+        await ctx.send(f"❌ No match for «{member}» (or more than one). Try `/subscribe` to browse everyone.")
+        return
+
+    current = get_subscription(ctx.author.id)
+    if name in current:
+        await ctx.send(f"⚠️ **{name}** is already in your subscription.")
+        return
+
+    save_subscription(ctx.author.id, current + [name])
+    await ctx.send(f"✅ Added **{name}** to your subscription.")
+
+
+@bot.hybrid_command(name="untrack", description="Remove one person from your subscription — searchable")
+@app_commands.describe(member="Start typing a name")
+@app_commands.rename(member="person")
+@app_commands.autocomplete(member=_member_autocomplete)
+async def cmd_untrack(ctx: commands.Context, *, member: str) -> None:
+    """!untrack <name> — remove one person from your subscription (searchable)."""
+    name = _find_member(member)
+    if name is None:
+        await ctx.send(f"❌ No match for «{member}» (or more than one).")
+        return
+
+    current = get_subscription(ctx.author.id)
+    if name not in current:
+        await ctx.send(f"⚠️ **{name}** isn't in your subscription.")
+        return
+
+    save_subscription(ctx.author.id, [n for n in current if n != name])
+    await ctx.send(f"✅ Removed **{name}** from your subscription.")
 
 
 async def _discord_user_autocomplete(
