@@ -7,7 +7,7 @@ from typing import Optional
 import discord
 from discord.ext import commands
 
-from config import MOSCOW, log
+from config import UTC3, log
 
 # Embed fields that name the report's author / date in reports posted by other bots
 # (e.g. C&C Daily Reports: "Developer: @user", "Date: 02.10.2026").
@@ -72,7 +72,7 @@ async def fetch_report_authors(bot: commands.Bot, target_date: date,
     if not channel_id:
         return None
 
-    start = datetime.combine(target_date, datetime.min.time(), tzinfo=MOSCOW)
+    start = datetime.combine(target_date, datetime.min.time(), tzinfo=UTC3)
     end   = start + timedelta(days=1)
     authors: set[int] = set()
 
