@@ -45,7 +45,7 @@ Example:
 ### Friday, October 2
 🔴 David · 6.8 of 8h · no report
 🟡 George · 7.5 of 8h
-🟡 Daria Herasimova · no report
+🟡 Jane Doe · no report
 -# The other 4 — no issues
 ```
 

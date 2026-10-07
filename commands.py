@@ -120,7 +120,6 @@ async def cmd_start(ctx: commands.Context) -> None:
         "**Do this to get it working:**\n"
         "```\n"
         "/subscribe          — pick who you want reports on\n"
-        "/setchannel         — run this in your team's daily-report channel\n"
         "/settime 09:00      — when you want your report (UTC+3)\n"
         "```\n"
         "That's it — tomorrow morning you'll get a DM with only the people who need "
@@ -339,7 +338,7 @@ async def cmd_addperson(ctx: commands.Context, *, args: str = "") -> None:
     if len(parts) < 2:
         await ctx.send(
             "❌ Format: `!addperson <name> <@user | nick | Discord ID>`\n"
-            "Example: `!addperson Daria Herasimova 954344819092783184`"
+            "Example: `!addperson Jane Doe 954344819092783184`"
         )
         return
 
