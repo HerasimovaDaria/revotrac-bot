@@ -12,21 +12,24 @@ from config import MOSCOW, PM_USER_ID, REMINDER_HOUR, REMINDER_MINUTE, RENORMALI
 from db import (
     _all_members,
     _all_renormalize_ids,
+    add_allowed_user,
     add_custom_member,
     add_report_only_member,
+    get_allowed_users,
     get_custom_members,
     get_discord_links,
     get_preference,
     get_reminders,
     get_reports_channel,
     get_subscription,
+    remove_allowed_user,
     remove_custom_member,
     save_discord_link,
     save_preference,
     save_reminders,
     save_reports_channel,
 )
-from renormalize import fetch_week_hours
+from renormalize import fetch_all_renormalize_users, fetch_week_hours
 from reports.formatting import format_weekly_report
 from routines import _build_report_text, _collect_report_data
 from ui.dayoff import DayOffView
@@ -133,15 +136,15 @@ async def cmd_start(ctx: commands.Context) -> None:
         "**🚀 Быстрый старт — 3 шага:**\n\n"
         "**1. Посмотри, кто уже есть в списке**\n"
         "```\n!members\n```\n"
-        "**2. Если нужного человека нет — добавь его по Renormalize ID**\n"
-        "```\n!addmember 12345 Имя Фамилия\n```\n"
-        "*(ID найдёшь в URL профиля сотрудника в Renormalize: `?entity_id=XXXXX`)*\n\n"
+        "**2. Если нужного человека нет — добавь его**\n"
+        "```\n!addmember Имя Фамилия\n```\n"
+        "*(или `/addmember` — Discord сам подскажет имя из Renormalize)*\n\n"
         "**3. Подпишись на нужных людей и выбери время отчёта**\n"
         "```\n!subscribe\n!settime 09:00\n```\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "**📋 Все команды:**\n\n"
         "`!members` — список всех доступных сотрудников\n"
-        "`!addmember <id> <имя>` — добавить человека по Renormalize ID\n"
+        "`!addmember <имя>` — добавить человека (есть автодополнение в `/addmember`)\n"
         "`!subscribe` — выбрать, чьи часы видеть в отчёте\n"
         "`!linkdiscord <имя> <ID>` — привязать Discord для проверки daily-отчётов\n"
         "`!addperson <имя> <ID>` — добавить человека без Renormalize (только отчёты)\n"
@@ -244,19 +247,84 @@ async def cmd_linkdiscord(ctx: commands.Context, *, args: str = "") -> None:
     )
 
 
-@bot.hybrid_command(name="addmember", description="Добавить сотрудника по Renormalize ID")
-@app_commands.describe(renorm_id="ID сотрудника в Renormalize", name="Имя для отчётов")
-@app_commands.rename(renorm_id="renormalize_id", name="имя")
-async def cmd_addmember(ctx: commands.Context, renorm_id: int, *, name: str) -> None:
-    """!addmember <renormalize_id> <name> — add a person by their Renormalize ID."""
-    name = name.strip()
-    if not name:
-        await ctx.send("❌ Укажи имя. Пример: `!addmember 12345 Ivan Petrov`")
+async def _renormalize_user_autocomplete(
+    interaction: discord.Interaction, current: str,
+) -> list[app_commands.Choice[str]]:
+    """Live-search Renormalize accounts (active, not already tracked) by name or email."""
+    try:
+        users = await fetch_all_renormalize_users()
+    except Exception as exc:
+        log.warning("renormalize user autocomplete failed: %s", exc)
+        return []
+    existing_ids = {rid for rid in _all_renormalize_ids().values() if rid}
+    cur = current.casefold().strip()
+    matches = [
+        u for u in users
+        if u.get("status") == "active" and u.get("id") not in existing_ids
+        and (not cur or cur in u.get("name", "").casefold() or cur in u.get("email", "").casefold())
+    ]
+    return [
+        app_commands.Choice(name=f"{u['name']} ({u.get('email', '')})"[:100], value=str(u["id"]))
+        for u in matches[:25]
+    ]
+
+
+@bot.hybrid_command(name="addmember", description="Добавить сотрудника — начни печатать имя, подскажет Renormalize")
+@app_commands.describe(person="Начни вводить имя — выбери из подсказок (или вставь Renormalize ID)")
+@app_commands.rename(person="сотрудник")
+@app_commands.autocomplete(person=_renormalize_user_autocomplete)
+async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
+    """!addmember <имя или Renormalize ID> — add a person found live in Renormalize."""
+    person = person.strip()
+    if not person:
+        await ctx.send("❌ Укажи имя или Renormalize ID. Пример: `!addmember Ivan Petrov`.")
         return
 
-    add_custom_member(renorm_id, name)
+    try:
+        users = await fetch_all_renormalize_users()
+    except Exception as exc:
+        log.exception("addmember: fetch_all_renormalize_users failed: %s", exc)
+        await ctx.send("❌ Не смог получить список из Renormalize. Попробуй ещё раз чуть позже.")
+        return
+
+    existing_ids = {rid for rid in _all_renormalize_ids().values() if rid}
+
+    if person.isdigit():
+        renorm_id = int(person)
+        match     = next((u for u in users if u.get("id") == renorm_id), None)
+        if match is None:
+            await ctx.send(f"❌ В Renormalize нет пользователя с ID `{renorm_id}`.")
+            return
+    else:
+        q          = person.casefold()
+        candidates = [
+            u for u in users
+            if u.get("status") == "active" and u.get("id") not in existing_ids
+            and q in u.get("name", "").casefold()
+        ]
+        if not candidates:
+            await ctx.send(
+                f"❌ Не нашёл «{person}» в Renormalize. Проверь написание — "
+                f"или используй `/addmember`, там живые подсказки."
+            )
+            return
+        if len(candidates) > 1:
+            lines = "\n".join(f"• {u['name']} — id `{u['id']}`" for u in candidates[:10])
+            await ctx.send(
+                f"⚠️ Нашёл несколько совпадений для «{person}»:\n{lines}\n\n"
+                f"Уточни имя или используй `/addmember` с подсказками."
+            )
+            return
+        match     = candidates[0]
+        renorm_id = match["id"]
+
+    if renorm_id in existing_ids:
+        await ctx.send(f"⚠️ **{match['name']}** уже в списке.")
+        return
+
+    add_custom_member(renorm_id, match["name"])
     await ctx.send(
-        f"✅ Добавлен: **{name}** (id `{renorm_id}`)\n"
+        f"✅ Добавлен: **{match['name']}** (id `{renorm_id}`)\n"
         f"Теперь его можно выбрать через `!subscribe`."
     )
 
@@ -574,31 +642,8 @@ async def cmd_find_members(ctx: commands.Context) -> None:
 
     await _working(ctx)
 
-    import httpx
-
-    # /members returns 501 Not Implemented — the working endpoint is /v1/users (paginated,
-    # no role/status filter; returns both active and inactive accounts).
     try:
-        members: list = []
-        async with httpx.AsyncClient() as client:
-            headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
-            page = 1
-            while True:
-                resp = await client.get(
-                    "https://api.renormalize.com/v1/users",
-                    params={"page": page, "count": 200},
-                    headers=headers,
-                    timeout=15,
-                )
-                resp.raise_for_status()
-                data  = resp.json()
-                batch = data if isinstance(data, list) else data.get("data", [])
-                if not batch:
-                    break
-                members.extend(batch)
-                if len(batch) < 200:
-                    break
-                page += 1
+        members = await fetch_all_renormalize_users(force=True)
     except Exception as exc:
         log.exception("findmembers API error: %s", exc)
         user = await bot.fetch_user(PM_USER_ID)
@@ -627,3 +672,56 @@ async def cmd_find_members(ctx: commands.Context) -> None:
     for chunk in [text[i:i+1900] for i in range(0, len(text), 1900)]:
         await user.send(chunk)
     await _reply(ctx, f"✅ Список отправлен тебе в личку ({len(members)} чел.).")
+
+
+@bot.hybrid_command(name="alloweduser",
+                    description="Кто может пользоваться ботом — добавить / убрать / показать список (только PM)")
+@app_commands.describe(action="add — разрешить, remove — запретить, list — показать список",
+                       user="Начни вводить ник — или вставь Discord ID (не нужен для list)")
+@app_commands.rename(action="действие", user="discord")
+@app_commands.choices(action=[
+    app_commands.Choice(name="add — разрешить", value="add"),
+    app_commands.Choice(name="remove — запретить", value="remove"),
+    app_commands.Choice(name="list — показать список", value="list"),
+])
+@app_commands.autocomplete(user=_discord_user_autocomplete)
+async def cmd_alloweduser(ctx: commands.Context, action: str, user: Optional[str] = None) -> None:
+    """!alloweduser <add|remove|list> [discord] — manage who can use the bot (PM only)."""
+    if ctx.author.id != PM_USER_ID:
+        await _deny(ctx)
+        return
+
+    action = action.strip().lower()
+
+    if action == "list":
+        ids = get_allowed_users()
+        header = "✅ **Доступ есть у тебя (PM) и у:**\n" if ids else "Доступ есть только у тебя (PM) — список пуст."
+        lines  = "\n".join(f"• <@{uid}> (`{uid}`)" for uid in ids)
+        await _reply(ctx, header + lines, allowed_mentions=discord.AllowedMentions.none())
+        return
+
+    if action not in ("add", "remove"):
+        await _reply(ctx, "❌ Действие: `add`, `remove` или `list`.")
+        return
+
+    if not user:
+        await _reply(ctx, "❌ Укажи, кого добавить/убрать — ник, упоминание или Discord ID.")
+        return
+
+    target = await _resolve_discord_user(user, ctx.message.mentions)
+    if target is None:
+        await _reply(ctx, f"❌ Не нашёл пользователя Discord «{user}». Выбери из подсказок или вставь ID.")
+        return
+
+    if action == "add":
+        add_allowed_user(target.id)
+        await _reply(ctx, f"✅ {target.mention} теперь может пользоваться ботом.",
+                     allowed_mentions=discord.AllowedMentions.none())
+    else:
+        if target.id == PM_USER_ID:
+            await _reply(ctx, "⚠️ Себя (PM) убрать нельзя — у тебя доступ всегда есть.")
+            return
+        removed = remove_allowed_user(target.id)
+        msg = (f"✅ {target.mention} больше не может пользоваться ботом." if removed
+               else f"⚠️ {target.mention} и так не было в списке разрешённых.")
+        await _reply(ctx, msg, allowed_mentions=discord.AllowedMentions.none())

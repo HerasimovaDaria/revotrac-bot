@@ -1,10 +1,57 @@
 """Hours data source: the Renormalize API, with a mock fallback."""
 
 import random
+import time
 from datetime import date, datetime, timedelta
 
 from config import MOSCOW, RENORMALIZE_API_KEY, log
 from db import _all_members, _all_renormalize_ids
+
+# ---------------------------------------------------------------------------
+# Workspace user directory — GET /v1/users (NOT /members, which is 501 Not Implemented).
+# Cached briefly since it backs live Discord autocomplete (!addmember) and is paginated.
+# ---------------------------------------------------------------------------
+
+_USERS_CACHE_TTL = 300   # seconds
+_users_cache: dict = {"data": [], "ts": 0.0}
+
+
+async def fetch_all_renormalize_users(force: bool = False) -> list[dict]:
+    """Return every Renormalize workspace account: [{"id", "name", "email", "status"}, ...].
+
+    Cached for _USERS_CACHE_TTL seconds — pass force=True to bypass the cache.
+    """
+    now = time.monotonic()
+    if not force and _users_cache["data"] and now - _users_cache["ts"] < _USERS_CACHE_TTL:
+        return _users_cache["data"]
+    if not RENORMALIZE_API_KEY:
+        return []
+
+    import httpx
+
+    users: list[dict] = []
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+        page = 1
+        while True:
+            resp = await client.get(
+                "https://api.renormalize.com/v1/users",
+                params={"page": page, "count": 200},
+                headers=headers,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data  = resp.json()
+            batch = data if isinstance(data, list) else data.get("data", [])
+            if not batch:
+                break
+            users.extend(batch)
+            if len(batch) < 200:
+                break
+            page += 1
+
+    _users_cache["data"], _users_cache["ts"] = users, now
+    return users
 
 
 def _mock_hours() -> dict[str, float]:

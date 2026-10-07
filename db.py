@@ -62,6 +62,35 @@ def init_db() -> None:
             )
             """
         )
+        # Check *before* creating the table — the seeding below must run exactly once,
+        # the first time this table is created, not every time it happens to be empty
+        # (otherwise a deliberate !alloweduser remove-everyone would quietly get undone
+        # by the next bot restart).
+        allowed_users_is_new = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'allowed_users'"
+        ).fetchone() is None
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS allowed_users (
+                discord_user_id INTEGER PRIMARY KEY
+            )
+            """
+        )
+        # Grandfather in everyone who already uses the bot the first time this table is
+        # created, so turning on access control doesn't lock out the whole current team —
+        # only people added after this point need an explicit !alloweduser add.
+        if allowed_users_is_new:
+            existing_ids: set[int] = set()
+            for row in conn.execute("SELECT DISTINCT discord_user_id FROM subscriptions"):
+                existing_ids.add(row[0])
+            for row in conn.execute("SELECT DISTINCT discord_user_id FROM preferences"):
+                existing_ids.add(row[0])
+            if existing_ids:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO allowed_users (discord_user_id) VALUES (?)",
+                    [(uid,) for uid in existing_ids],
+                )
         conn.commit()
 
 
@@ -323,3 +352,33 @@ def get_users_for_time(hour: int, minute: int) -> list[int]:
                 if r[0] not in result:
                     result.append(r[0])
     return result
+
+
+# --- access control -----------------------------------------------------------
+
+def add_allowed_user(user_id: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("INSERT OR IGNORE INTO allowed_users (discord_user_id) VALUES (?)", (user_id,))
+        conn.commit()
+
+
+def remove_allowed_user(user_id: int) -> bool:
+    """Returns True if the user was removed (False if they weren't on the list)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.execute("DELETE FROM allowed_users WHERE discord_user_id = ?", (user_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_allowed_users() -> list[int]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT discord_user_id FROM allowed_users ORDER BY rowid").fetchall()
+    return [r[0] for r in rows]
+
+
+def is_allowed_user(user_id: int) -> bool:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM allowed_users WHERE discord_user_id = ?", (user_id,)
+        ).fetchone()
+    return row is not None
