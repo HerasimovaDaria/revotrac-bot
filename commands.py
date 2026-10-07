@@ -44,7 +44,6 @@ from db import (
 from renormalize import fetch_all_renormalize_users, fetch_month_hours, fetch_week_hours
 from reports.formatting import format_monthly_report, format_weekly_report
 from routines import _build_report_text, _collect_report_data
-from ui.subscribe import SubscribeView, _subscribe_prompt
 from utils import _find_member, _resolve_discord_user, previous_workday, week_start
 
 # ---------------------------------------------------------------------------
@@ -79,16 +78,6 @@ async def _deny(ctx: commands.Context) -> None:
         await ctx.message.add_reaction("🚫")
 
 
-@bot.hybrid_command(name="subscribe", description="Choose which people appear in your morning report")
-async def cmd_subscribe(ctx: commands.Context) -> None:
-    """!subscribe — choose which team members appear in your daily reports."""
-    user_id = ctx.author.id
-    current = get_subscription(user_id)
-    view    = SubscribeView(user_id)
-
-    await _reply(ctx, _subscribe_prompt(current), view=view)
-
-
 @bot.hybrid_command(name="report", description="Get a report for the last workday right now")
 async def cmd_report(ctx: commands.Context) -> None:
     """!report — trigger your personalized morning report right now."""
@@ -99,7 +88,7 @@ async def cmd_report(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
+            "Use `/track <name>` to add people."
         )
         return
 
@@ -134,8 +123,7 @@ async def cmd_start(ctx: commands.Context) -> None:
         "`/tracklist` — see who you're tracking\n"
         "`/settime HH:MM` — set or check your report time\n"
         "`/report` — get your report right now, don't wait for tomorrow\n\n"
-        "**Also useful:** `/subscribe` (bulk pick/browse everyone instead of one by one) · "
-        "`/weekly` (week progress) · `/monthly` (who's behind this month) · "
+        "**Also useful:** `/weekly` (week progress) · `/monthly` (who's behind this month) · "
         "`/members` (who's tracked)\n\n"
         "-# No access? Ask the Lead for `/alloweduser add`."
     )
@@ -152,7 +140,7 @@ async def cmd_weekly(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
+            "Use `/track <name>` to add people."
         )
         return
 
@@ -176,7 +164,7 @@ async def cmd_monthly(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
+            "Use `/track <name>` to add people."
         )
         return
 
@@ -535,7 +523,7 @@ async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> 
     save_preference(ctx.author.id, hour, minute)
     await ctx.send(
         f"✅ Daily report time set: **{hour:02d}:{minute:02d} UTC+2**.\n"
-        f"Haven't picked people yet? Use `!track <name>` to add someone, or `!subscribe` to browse everyone."
+        f"Haven't picked people yet? Use `!track <name>` to add someone."
     )
 
 
@@ -566,11 +554,11 @@ async def cmd_tracklist(ctx: commands.Context) -> None:
 @app_commands.rename(member="person")
 @app_commands.autocomplete(member=_member_autocomplete)
 async def cmd_track(ctx: commands.Context, *, member: str) -> None:
-    """!track <name> — add one person to your subscription (searchable, unlike /subscribe's
-    checkbox list). See /tracklist for who you're currently tracking."""
+    """!track <name> — add one person to your subscription (searchable). See /tracklist for
+    who you're currently tracking."""
     name = _find_member(member)
     if name is None:
-        await ctx.send(f"❌ No match for «{member}» (or more than one). Try `/subscribe` to browse everyone.")
+        await ctx.send(f"❌ No match for «{member}» (or more than one). Check the spelling, or `/members` to browse everyone.")
         return
 
     current = get_subscription(ctx.author.id)
@@ -668,9 +656,9 @@ async def slash_addperson(interaction: discord.Interaction, name: str, user: str
     )
 
 
-@bot.hybrid_command(name="findmembers", description="List everyone in Renormalize with their ID (Lead only)")
-async def cmd_find_members(ctx: commands.Context) -> None:
-    """!findmembers — list all Renormalize workspace members with their IDs (Lead only)."""
+@bot.hybrid_command(name="renormalizeusers", description="List everyone in Renormalize with their ID (Lead only)")
+async def cmd_renormalize_users(ctx: commands.Context) -> None:
+    """!renormalizeusers — list all Renormalize workspace members with their IDs (Lead only)."""
     if ctx.author.id != LEAD_USER_ID:
         await _deny(ctx)
         return
@@ -683,7 +671,7 @@ async def cmd_find_members(ctx: commands.Context) -> None:
     try:
         members = await fetch_all_renormalize_users(force=True)
     except Exception as exc:
-        log.exception("findmembers API error: %s", exc)
+        log.exception("renormalizeusers API error: %s", exc)
         user = await bot.fetch_user(LEAD_USER_ID)
         await user.send(f"❌ Renormalize request failed:\n```{exc}```")
         await _reply(ctx, "❌ Renormalize request failed, details sent to your DMs.")

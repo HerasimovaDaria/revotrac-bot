@@ -4,7 +4,7 @@ A Discord bot that DMs each subscriber a short morning report: which of their pe
 short on hours in Renormalize, and who hasn't posted a daily report in Discord. In the
 evening it can also remind people who still haven't posted.
 
-Split across modules (`config.py`, `db.py`, `renormalize.py`, `reports/`, `ui/`,
+Split across modules (`config.py`, `db.py`, `renormalize.py`, `reports/`,
 `routines.py`, `commands.py`) and wired together by `bot.py`. Stack: discord.py +
 APScheduler + SQLite.
 
@@ -17,7 +17,7 @@ APScheduler + SQLite.
 | Concept | What it is |
 |---|---|
 | **Tracked person** | Someone whose hours/reports can be followed. Comes from one of three places in `config.py`/the database: `TEAM` (a handful of hardcoded people with real hour targets), `CANDIDATE_ROSTER` (a curated list of ~57 engineers, default 8h/day target, already trackable with `/track` — no `/addmember` needed), or `custom_members` in the database (anyone added at runtime with `/addmember`, Renormalize ID + hours tracked, or `/addperson`, no Renormalize, report check only). |
-| **Subscriber** | A Discord user who receives a morning report. Adds people one at a time with `/track` (searchable — the easiest way day to day), or browses/bulk-picks everyone with `/subscribe`. `/tracklist` shows the current list, `/untrack` removes one person. Any number of subscribers, each with their own list. |
+| **Subscriber** | A Discord user who receives a morning report. Adds people one at a time with `/track` (searchable), removes with `/untrack`, `/tracklist` shows the current list. Any number of subscribers, each with their own list. |
 | **Discord link** | "Tracked person → their Discord account" (`/linkdiscord`). Without it the bot can't tell which messages in a channel count as that person's report. |
 | **Reports channel** | Where daily reports get posted. Each subscriber can set their own (`/setchannel`); falls back to `REPORTS_CHANNEL_ID` if unset. Channels can be on different servers — the bot just needs to be a member of each one. |
 | **Day off** | Vacation, sick leave or other absence — read live from Renormalize (`/v1/vacations`), not entered manually. Skipped for both the hours and the report check. Only works for tracked people with a Renormalize ID; report-only people (`/addperson`) can't be checked this way. |
@@ -73,7 +73,7 @@ Two layers:
 - **Lead (`LEAD_USER_ID`)** — one fixed Discord ID, set once in the environment. Always has
   access to everything, and is the only one who can run Lead-only commands:
   - `/removemember` — remove a manually-added person
-  - `/findmembers` — list everyone in the Renormalize workspace with their ID
+  - `/renormalizeusers` — list everyone in the Renormalize workspace with their ID
   - `/alloweduser` — manage who else can use the bot (see below)
 
   Without `LEAD_USER_ID` set, the bot refuses to start.
@@ -119,7 +119,6 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | `/track <person>` | Add one person to your subscription — searchable, start typing a name |
 | `/untrack <person>` | Remove one person from your subscription — searchable |
 | `/tracklist` | Show who's in your subscription |
-| `/subscribe` | Bulk-pick/browse everyone instead of one by one (checkbox list — chunked past 25 people) |
 | `/settime 09:00` | Your morning report time (UTC+2); no argument shows the current one |
 | `/report` | Get a report for the last workday right now |
 | `/weekly` | Hours progress for the current week |
@@ -131,7 +130,7 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | `/setchannel [channel_id]` | Set your reports channel — run it in the target channel, or pass an ID |
 | `/reminders on\|off` | Evening reminders for your subscription |
 | `/removemember <id or name>` | Remove a manually-added person (**Lead only**) |
-| `/findmembers` | List everyone in Renormalize with their ID and status (**Lead only**) |
+| `/renormalizeusers` | List everyone in Renormalize with their ID and status (**Lead only**) |
 | `/alloweduser add\|remove\|list [discord]` | Manage who can use the bot (**Lead only**) |
 
 ---
@@ -140,7 +139,7 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 
 **The Lead wants to know which PMs haven't posted their own report**
 1. Add the PMs: `/addperson <name> <discord>`.
-2. Lead: `/subscribe` (pick the PMs) → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
+2. Lead: `/track <name>` for each PM → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
 
 **A PM tracks their developers' hours and reports**
 1. `/track <name>` — most developers are already in `CANDIDATE_ROSTER`, so this alone adds them. If a name doesn't come up (check `/members`), use `/addmember` first, then `/track`.
