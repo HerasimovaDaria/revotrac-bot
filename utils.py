@@ -14,7 +14,7 @@ from db import _all_members
 def _find_member(query: str) -> Optional[str]:
     """Match *query* against member names (RU or EN, case-insensitive).
 
-    Exact match first, otherwise a unique partial match (e.g. "Aleksey" → "Лёша Седин").
+    Exact match first, otherwise a unique partial match (e.g. "Aleksey" → one TEAM member's RU name).
     """
     q = query.strip().strip("<>").casefold()
     all_m = _all_members()

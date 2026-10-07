@@ -15,8 +15,8 @@ from ui.common import _chunk_placeholder, _member_chunks
 
 def _dayoff_summary(day: date) -> str:
     names = sorted(get_day_offs(day))
-    return (f"✅ Выходной {day.strftime('%d.%m.%Y')}: {', '.join(names)}" if names
-            else f"👍 Выходных на {day.strftime('%d.%m.%Y')} нет.")
+    return (f"✅ Off on {day.strftime('%d.%m.%Y')}: {', '.join(names)}" if names
+            else f"👍 Nobody's off on {day.strftime('%d.%m.%Y')}.")
 
 
 class DayOffSelect(discord.ui.DynamicItem[discord.ui.Select],
@@ -60,7 +60,7 @@ class DayOffSaveButton(discord.ui.DynamicItem[discord.ui.Button],
     def __init__(self, target_date: date) -> None:
         self.target_date = target_date
         super().__init__(
-            discord.ui.Button(label="Сохранить", style=discord.ButtonStyle.success, emoji="💾",
+            discord.ui.Button(label="Save", style=discord.ButtonStyle.success, emoji="💾",
                               custom_id=f"dayoff:save:{target_date.isoformat()}"),
             row=4,
         )
@@ -78,7 +78,7 @@ class DayOffNoneButton(discord.ui.DynamicItem[discord.ui.Button],
     def __init__(self, target_date: date) -> None:
         self.target_date = target_date
         super().__init__(
-            discord.ui.Button(label="Сегодня все работают", style=discord.ButtonStyle.secondary,
+            discord.ui.Button(label="Everyone's in today", style=discord.ButtonStyle.secondary,
                               emoji="🚫", custom_id=f"dayoff:none:{target_date.isoformat()}"),
             row=4,
         )
@@ -98,6 +98,6 @@ class DayOffView(discord.ui.View):
         chunks = _member_chunks("day-off selector")
         for i, chunk in enumerate(chunks):
             self.add_item(DayOffSelect(
-                target_date, i, chunk, _chunk_placeholder("Выберите сотрудников…", i, chunk, len(chunks))))
+                target_date, i, chunk, _chunk_placeholder("Choose people…", i, chunk, len(chunks))))
         self.add_item(DayOffSaveButton(target_date))
         self.add_item(DayOffNoneButton(target_date))

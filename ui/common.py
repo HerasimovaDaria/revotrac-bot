@@ -20,4 +20,4 @@ def _member_chunks(context: str) -> list[list[tuple[str, str, float, float]]]:
 def _chunk_placeholder(default: str, i: int, chunk: list, total_chunks: int) -> str:
     if total_chunks == 1:
         return default
-    return f"Сотрудники {i * SELECT_LIMIT + 1}–{i * SELECT_LIMIT + len(chunk)}…"
+    return f"People {i * SELECT_LIMIT + 1}–{i * SELECT_LIMIT + len(chunk)}…"

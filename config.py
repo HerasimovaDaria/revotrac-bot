@@ -45,8 +45,8 @@ MEMBER_NAMES   = [m[0] for m in TEAM]
 DAILY_TARGET:  dict[str, float] = {m[0]: m[2] for m in TEAM}
 WEEKLY_TARGET: dict[str, float] = {m[0]: m[3] for m in TEAM}
 
-# Renormalize user IDs — найти их можно командой !findmembers
-# или вручную: открой отчёт сотрудника в Renormalize, ID в URL: ?id=XXXXX
+# Renormalize user IDs — find them with !findmembers,
+# or manually: open the employee's report in Renormalize, the ID is in the URL: ?id=XXXXX
 RENORMALIZE_IDS: dict[str, Optional[int]] = {
     "Лёша Седин":          76544,
     "Лёша Думалин":        76542,
