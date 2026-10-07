@@ -188,3 +188,73 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
                 log.exception("fetch_week_hours failed for %s: %s", name, exc)
 
     return totals
+
+
+# ---------------------------------------------------------------------------
+# Day off / sick leave / absence — GET /v1/vacations?user_id=<id> (the name is
+# misleading: it returns every leave type — "vacation", "sick_leave", "absence" — not
+# just vacations). No manual day-off entry needed: we read it straight from Renormalize.
+# Only covers people with a Renormalize ID — report-only people (added via !addperson)
+# have no Renormalize account, so they can't be checked this way.
+# ---------------------------------------------------------------------------
+
+_LEAVE_CACHE_TTL = 1800   # seconds
+_leave_cache: dict[int, dict] = {}   # renorm_id -> {"data": [(start, end), ...], "ts": float}
+
+
+async def fetch_leave_records(renorm_id: int, force: bool = False) -> list[tuple[date, date]]:
+    """Return [(start_date, end_date), ...] for every leave record of this Renormalize user,
+    past and future. Cached per ID for _LEAVE_CACHE_TTL seconds.
+    """
+    now    = time.monotonic()
+    cached = _leave_cache.get(renorm_id)
+    if not force and cached and now - cached["ts"] < _LEAVE_CACHE_TTL:
+        return cached["data"]
+    if not RENORMALIZE_API_KEY:
+        return []
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://api.renormalize.com/v1/vacations",
+                params={"user_id": str(renorm_id)},
+                headers={"Authorization": f"Bearer {RENORMALIZE_API_KEY}"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            raw = resp.json()
+    except Exception as exc:
+        log.warning("fetch_leave_records failed for %s: %s", renorm_id, exc)
+        return cached["data"] if cached else []
+
+    records: list[tuple[date, date]] = []
+    for rec in raw:
+        try:
+            start = date.fromisoformat(rec["start"][:10])
+            end   = date.fromisoformat(rec["end"][:10])
+            records.append((start, end))
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    _leave_cache[renorm_id] = {"data": records, "ts": now}
+    return records
+
+
+async def fetch_day_offs(target_date: date) -> set[str]:
+    """Return display names of everyone on vacation/sick leave/absence in Renormalize on
+    *target_date*. Report-only people (no Renormalize ID) are never included — there's no
+    leave data to check for them.
+    """
+    off: set[str] = set()
+    all_ids = _all_renormalize_ids()
+    for name, _en, _daily, _weekly in _all_members():
+        renorm_id = all_ids.get(name)
+        if not renorm_id or renorm_id < 0:
+            continue
+        for start, end in await fetch_leave_records(renorm_id):
+            if start <= target_date <= end:
+                off.add(name)
+                break
+    return off

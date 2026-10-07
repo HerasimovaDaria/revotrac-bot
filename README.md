@@ -20,7 +20,7 @@ APScheduler + SQLite.
 | **Subscriber** | A Discord user who receives a morning report. Picks who to follow with `/subscribe`. Any number of subscribers, each with their own list. |
 | **Discord link** | "Tracked person → their Discord account" (`/linkdiscord`). Without it the bot can't tell which messages in a channel count as that person's report. |
 | **Reports channel** | Where daily reports get posted. Each subscriber can set their own (`/setchannel`); falls back to `REPORTS_CHANNEL_ID` if unset. Channels can be on different servers — the bot just needs to be a member of each one. |
-| **Day off** | A "this person isn't working today" flag. Skipped for both the hours and the report check. Shared across all subscribers, set by the PM. |
+| **Day off** | Vacation, sick leave or other absence — read live from Renormalize (`/v1/vacations`), not entered manually. Skipped for both the hours and the report check. Only works for tracked people with a Renormalize ID; report-only people (`/addperson`) can't be checked this way. |
 | **Allowed user** | Who's permitted to talk to the bot at all — a separate concept from "tracked person" above. See **Access control** below. |
 
 ### Morning report
@@ -36,7 +36,7 @@ Sent on workdays at the time each subscriber picked with `/settime` (default 09:
    - any message from the person themselves counts;
    - if another bot posted the report (e.g. a "Daily Reports" bot), the author is read from an embed field named `Developer`/`Author`/`User` (or their Russian equivalents, for reports already posted that way) — if a `Date` field names a different day, it doesn't count;
    - both plain text channels and forums work (forums: all posts, including archived ones).
-4. **What shows up.** Only people with an issue: an hours shortfall and/or a missing report. Everyone else is summarized as "The other N — no issues". People on a day off are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
+4. **What shows up.** Only people with an issue: an hours shortfall and/or a missing report. Everyone else is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
 5. **Weekly.** Friday's report also includes weekly hours progress. Any day, `/weekly` shows it on demand.
 
 Example:
@@ -53,15 +53,8 @@ Example:
 
 A subscriber turns them on with `/reminders on`. On workdays at `REMINDER_TIME` (default
 19:00 UTC+3), the bot checks that subscriber's reports channel for **today**. Everyone in
-their subscription without a report gets a DM. People on a day off are skipped. Someone in
-several subscriptions still gets just one message.
-
-### Day off menu
-
-Every workday, at the time the PM picked with `/settime`, the bot DMs them a "Who's off
-today?" menu. A day off for a different date is set with `/dayoff DD.MM`. The menu survives
-bot restarts and stays usable after its original 10-minute interaction window — choices are
-saved the moment you click, not just on "Save".
+their subscription without a report gets a DM. People on vacation/sick leave/absence that
+day are skipped. Someone in several subscriptions still gets just one message.
 
 ### Access control
 
@@ -69,7 +62,6 @@ Two layers:
 
 - **PM (`PM_USER_ID`)** — one fixed Discord ID, set once in the environment. Always has
   access to everything, and is the only one who can run PM-only commands:
-  - `/dayoff` — set day offs (shared across all subscribers, so one person owns it)
   - `/removemember` — remove a manually-added person
   - `/findmembers` — list everyone in the Renormalize workspace with their ID
   - `/alloweduser` — manage who else can use the bot (see below)
@@ -120,7 +112,6 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | `/linkdiscord <person> <discord>` | Link a tracked person to a Discord account (autocompletes both fields) |
 | `/setchannel [channel_id]` | Set your reports channel — run it in the target channel, or pass an ID |
 | `/reminders on\|off` | Evening reminders for your subscription |
-| `/dayoff [DD.MM]` | Mark who's off (**PM only**) |
 | `/removemember <id or name>` | Remove a manually-added person (**PM only**) |
 | `/findmembers` | List everyone in Renormalize with their ID and status (**PM only**) |
 | `/alloweduser add\|remove\|list [discord]` | Manage who can use the bot (**PM only**) |
@@ -184,8 +175,8 @@ duplicated replies and duplicated scheduled DMs to real people.
 1. Connect the repo: Railway runs `worker: python3 bot.py` from `Procfile` on every push to `main`.
 2. Set the environment variables (table above).
 3. **Attach a Volume** (e.g. mounted at `/data`) and set `DB_PATH=/data/hours.db`. Without
-   it, subscriptions, links, channels, day offs and the allowed-users list all get wiped on
-   every deploy.
+   it, subscriptions, links, channels and the allowed-users list all get wiped on every
+   deploy.
 4. Merging more than one PR in quick succession can race Railway's own build/deploy pipeline
    — the older commit can end up "winning" and staying active even though a newer, working
    build finished first. Wait for "Deployment successful" before merging the next PR.
@@ -200,8 +191,10 @@ duplicated replies and duplicated scheduled DMs to real people.
 | `preferences` | report time, own reports channel, reminders on/off |
 | `custom_members` | people added via `/addmember` / `/addperson` (the latter get a negative ID and a 0h target) |
 | `discord_links` | tracked person → Discord ID |
-| `day_offs` | tracked person + day-off date |
 | `allowed_users` | Discord IDs allowed to use the bot (besides the PM) — managed with `/alloweduser` |
+
+Day offs aren't stored here at all — they're read live from Renormalize on every report
+(see **Day off** above).
 
 People defined in code (`TEAM` and `RENORMALIZE_IDS` in `config.py`) aren't stored in the
 database — the `TEAM` names are also used as primary keys in several of the tables above, so

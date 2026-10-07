@@ -41,7 +41,6 @@ from db import (
 from renormalize import fetch_all_renormalize_users, fetch_week_hours
 from reports.formatting import format_weekly_report
 from routines import _build_report_text, _collect_report_data
-from ui.dayoff import DayOffView
 from ui.subscribe import SubscribeView, _subscribe_prompt
 from utils import _find_member, _resolve_discord_user, previous_workday, week_start
 
@@ -112,58 +111,40 @@ async def cmd_report(ctx: commands.Context) -> None:
     await _reply(ctx, text)
 
 
-@bot.hybrid_command(name="dayoff", description="Mark who's off on a given day (PM only)")
-@app_commands.describe(date_str="Date DD.MM, defaults to today")
-@app_commands.rename(date_str="date")
-async def cmd_dayoff(ctx: commands.Context, date_str: Optional[str] = None) -> None:
-    """!dayoff [DD.MM] — open day-off selector for a given date (PM only)."""
-    if ctx.author.id != PM_USER_ID:
-        await _deny(ctx)
-        return
-
-    if date_str:
-        try:
-            today  = datetime.now(UTC3).date()
-            parsed = datetime.strptime(date_str, "%d.%m").replace(year=today.year).date()
-        except ValueError:
-            await ctx.send("❌ Invalid format. Example: `!dayoff 25.05`")
-            return
-    else:
-        parsed = datetime.now(UTC3).date()
-
-    view = DayOffView(parsed)
-    await _reply(ctx, f"📅 **Who's off on {parsed.strftime('%d.%m.%Y')}?**", view=view)
-
-
 @bot.hybrid_command(name="start", description="What this bot does and how to set it up")
 async def cmd_start(ctx: commands.Context) -> None:
     """!start — onboarding: show what this bot does and how to set it up."""
     text = (
-        "👋 **Hi! I track the team's hours in Renormalize.**\n"
-        "Every morning I'll DM you a report on the people you choose.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "**🚀 Quick start — 3 steps:**\n\n"
-        "**1. See who's already tracked**\n"
-        "```\n!members\n```\n"
-        "**2. If someone's missing — add them**\n"
-        "```\n!addmember First Last\n```\n"
-        "*(or `/addmember` — Discord will suggest the name straight from Renormalize)*\n\n"
-        "**3. Subscribe to the people you want and pick your report time**\n"
-        "```\n!subscribe\n!settime 09:00\n```\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "**📋 All commands:**\n\n"
-        "`!members` — list everyone available for tracking\n"
-        "`!addmember <name>` — add a person (autocomplete in `/addmember`)\n"
-        "`!subscribe` — choose whose hours to see in your report\n"
-        "`!linkdiscord <name> <ID>` — link Discord for daily-report checks\n"
-        "`!addperson <name> <ID>` — add a person without Renormalize (reports only)\n"
-        "`!setchannel` — run this in a channel to check daily reports there\n"
-        "`!settime HH:MM` — your daily report time (UTC+3, default 09:00)\n"
-        "`!reminders on` — evening DM to your subscription's people who haven't reported\n"
-        "`!report` — get a report right now\n"
-        "`!weekly` — progress for the current week\n"
-        "`!start` — show this guide again\n\n"
-        "💡 Every command also works with `/` — Discord will show hints.\n"
+        "**Renormalize Tracker**\n"
+        "Tracks hours and daily reports for whoever you choose, and DMs you a report "
+        "every morning. You only see people with an actual problem — short on hours, "
+        "or no report. Day offs, vacation and sick leave are read straight from "
+        "Renormalize, so those people are skipped automatically, no manual entry.\n\n"
+        "**Setup**\n"
+        "```\n"
+        "!members            — see who's already tracked\n"
+        "!addmember <name>   — add someone (or /addmember for autocomplete)\n"
+        "!subscribe          — pick who appears in your report\n"
+        "!setchannel         — run this in your team's daily-report channel\n"
+        "!settime 09:00      — when you want your morning report (UTC+3)\n"
+        "```\n"
+        "**How PMs actually use it**\n"
+        "• **Running your own team** — subscribe to your devs, set your reports channel "
+        "once. Every morning: only the people short on hours or missing a report show up.\n"
+        "• **Checking mid-day** — `!report` pulls the same report right now, no need to "
+        "wait for your scheduled time.\n"
+        "• **Week-level view** — `!weekly` shows hours progress for your people so far "
+        "this week.\n"
+        "• **Stop chasing people manually** — `!reminders on` DMs anyone in your "
+        "subscription who hasn't posted by evening, so they can still make it before "
+        "midnight.\n"
+        "• **Managing PMs instead of devs** — same flow: `!addperson <name> <discord>` "
+        "adds someone without Renormalize tracking (just the daily-report check).\n\n"
+        "**All commands:**\n"
+        "`!members` `!addmember` `!addperson` `!subscribe` `!linkdiscord` `!setchannel` "
+        "`!settime` `!reminders` `!report` `!weekly` `!start`\n\n"
+        "-# Every command also works as `/command` — Discord will show hints as you type.\n"
+        "-# No access? Ask the Head of PM to run `/alloweduser add` for you."
     )
     await _reply(ctx, text)
 
