@@ -36,6 +36,7 @@ from client import bot, scheduler
 from config import PM_USER_ID, TOKEN, log
 from db import init_db
 from routines import check_report_time
+from ui.dayoff import DayOffNoneButton, DayOffSaveButton, DayOffSelect
 
 import commands  # noqa: F401  (registers all !/slash commands via decorators)
 
@@ -48,6 +49,8 @@ async def on_ready() -> None:
 
     if scheduler.running:            # on_ready fires again after reconnects
         return
+
+    bot.add_dynamic_items(DayOffSelect, DayOffSaveButton, DayOffNoneButton)
 
     try:
         synced = await bot.tree.sync()
