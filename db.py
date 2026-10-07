@@ -9,7 +9,7 @@ import os
 import sqlite3
 from typing import Optional
 
-from config import CANDIDATE_ROSTER, DB_PATH, RENORMALIZE_IDS, REPORTS_CHANNEL_ID, TEAM
+from config import CANDIDATE_ROSTER, DB_PATH, RENAMED_TEAM_MEMBERS, RENORMALIZE_IDS, REPORTS_CHANNEL_ID, TEAM
 
 
 def init_db() -> None:
@@ -86,6 +86,23 @@ def init_db() -> None:
                     "INSERT OR IGNORE INTO allowed_users (discord_user_id) VALUES (?)",
                     [(uid,) for uid in existing_ids],
                 )
+
+        # One-time migration: TEAM members' display name moved from Russian to English
+        # (RENAMED_TEAM_MEMBERS in config.py). Rename any row still under the old name so
+        # existing subscriptions/links don't silently stop matching. Naturally idempotent —
+        # once a row is renamed, WHERE member = old_name matches nothing on later runs.
+        # OR IGNORE: if a row already exists under the new name too (edge case), leave the
+        # old one in place rather than erroring on the primary key.
+        for old_name, new_name in RENAMED_TEAM_MEMBERS.items():
+            conn.execute(
+                "UPDATE OR IGNORE subscriptions SET member = ? WHERE member = ?",
+                (new_name, old_name),
+            )
+            conn.execute(
+                "UPDATE OR IGNORE discord_links SET member = ? WHERE member = ?",
+                (new_name, old_name),
+            )
+
         conn.commit()
 
 
@@ -220,7 +237,7 @@ def get_discord_links() -> dict[str, int]:
 # --- preference helpers (report time per user) ------------------------------
 
 def save_preference(user_id: int, hour: int, minute: int) -> None:
-    """Save or update the user's daily report time (stored as UTC+3)."""
+    """Save or update the user's daily report time (stored as UTC+2)."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -300,7 +317,7 @@ def get_preference(user_id: int) -> tuple[int, int]:
 
 
 def get_users_for_time(hour: int, minute: int) -> list[int]:
-    """Return Discord user IDs of subscribers whose report fires at hour:minute (UTC+3).
+    """Return Discord user IDs of subscribers whose report fires at hour:minute (UTC+2).
 
     Users who never ran !settime default to 9:00 and are included when hour=9, minute=0.
     """

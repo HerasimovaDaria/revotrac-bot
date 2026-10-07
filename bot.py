@@ -1,31 +1,39 @@
 """
 Discord bot: daily team hours reports with day-off tracking and per-user subscriptions.
 
-Morning routine (per-user configured time, default 09:00 UTC+3, Mon–Fri only):
+Morning routine (per-user configured time, default 09:00 UTC+2, Mon–Fri only):
   Personalized report for the PREVIOUS WORKDAY (on Monday — for Friday) — sent to every
-  subscriber. Lists only their members with an hours shortfall (🟡/🔴) or no daily report
-  in the subscriber's own channel (!setchannel; default REPORTS_CHANNEL_ID), any message
-  00:00–23:59 UTC+3. People on vacation/sick leave/absence in Renormalize that day are
-  skipped (read live — no manual day-off entry).
+  subscriber. Lists only their members with an hours shortfall (🟡/🔴), a meaningful
+  surplus (🔵 — overtime), or no daily report in the subscriber's own channel
+  (!setchannel; default REPORTS_CHANNEL_ID), any message 00:00–23:59 UTC+2. People on
+  vacation/sick leave/absence in Renormalize that day are skipped (read live — no manual
+  day-off entry).
   Weekly progress is appended only to the report for Friday.
 
-Evening reminder (REMINDER_TIME, default 19:00 UTC+3, Mon–Fri): for subscribers who ran
+Midday alert (MIDDAY_CHECK_TIME, default 13:00 UTC+2, Mon–Fri): for every subscriber, a DM
+about anyone in their subscription with 0 hours logged so far today and no day off on
+record — a heads-up, not necessarily a problem.
+
+Evening reminder (REMINDER_TIME, default 19:00 UTC+2, Mon–Fri): for subscribers who ran
 !reminders on, everyone in their subscription without a report today gets a DM.
 
 Commands (also available as slash commands with autocomplete: /subscribe, /report, …):
   !subscribe              — choose which team members appear in your daily reports
-  !settime [HH:MM]        — set your daily report time (UTC+3). No arg = show current.
+  !track <name>           — add one person to your subscription (searchable)
+  !untrack <name>         — remove one person from your subscription (searchable)
+  !settime [HH:MM]        — set your daily report time (UTC+2). No arg = show current.
   !report                 — trigger your personalized morning report right now
   !weekly                 — show current-week progress for your subscribed members
+  !monthly                — show who's behind this month (shortfall only)
   !members                — list all people available for tracking (with Discord links)
   !linkdiscord <name> <@user|nick|id> — link a member to Discord (for daily-report checks)
   !addmember <name|id>    — add a person found live in Renormalize (visible to everyone)
   !addperson <name> <@user|nick|id> — add a person without Renormalize (daily-report check only)
-  !removemember <id|name> — remove a custom member (PM only)
+  !removemember <id|name> — remove a custom member (Lead only)
   !setchannel [id]        — use this channel (or channel id) as YOUR daily-reports channel
   !reminders [on|off]     — evening DM to people in your subscription who haven't posted a report
-  !findmembers            — list all Renormalize workspace members (PM only)
-  !alloweduser add|remove|list — manage who can use the bot (PM only)
+  !findmembers            — list all Renormalize workspace members (Lead only)
+  !alloweduser add|remove|list — manage who can use the bot (Lead only)
 
 The implementation is split across modules: config.py (settings/roster), db.py (SQLite),
 renormalize.py (hours + day-off API), reports/ (formatting + author detection),
@@ -34,7 +42,7 @@ This file just wires them up.
 """
 
 from client import bot, scheduler
-from config import PM_USER_ID, TOKEN, log
+from config import LEAD_USER_ID, TOKEN, log
 from db import init_db
 from routines import check_report_time
 
@@ -65,12 +73,12 @@ async def on_ready() -> None:
         kwargs={"bot": bot},
     )
     scheduler.start()
-    log.info("Scheduler started — checking report times every minute (UTC+3)")
+    log.info("Scheduler started — checking report times every minute (UTC+2)")
 
 
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("DISCORD_BOT_TOKEN is not set. Copy .env.example → .env and fill it in.")
-    if not PM_USER_ID:
-        raise SystemExit("PM_USER_ID is not set.")
+    if not LEAD_USER_ID:
+        raise SystemExit("LEAD_USER_ID is not set.")
     bot.run(TOKEN, log_handler=None)

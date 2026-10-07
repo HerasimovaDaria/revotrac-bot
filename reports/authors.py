@@ -7,7 +7,7 @@ from typing import Optional
 import discord
 from discord.ext import commands
 
-from config import UTC3, log
+from config import UTC2, log
 
 # Embed fields that name the report's author / date in reports posted by other bots
 # (e.g. C&C Daily Reports: "Developer: @user", "Date: 02.10.2026").
@@ -63,7 +63,7 @@ async def fetch_report_authors(bot: commands.Bot, target_date: date,
                                channel_id: int) -> Optional[set[int]]:
     """
     Return Discord IDs of everyone who posted in *channel_id* on *target_date*
-    (00:00–23:59 UTC+3). Any non-bot message counts as a report; for messages from
+    (00:00–23:59 UTC+2). Any non-bot message counts as a report; for messages from
     other report bots the author is taken from the embed (see _bot_report_authors).
 
     Text channel → channel history. Forum → messages in all posts (active + archived).
@@ -72,7 +72,7 @@ async def fetch_report_authors(bot: commands.Bot, target_date: date,
     if not channel_id:
         return None
 
-    start = datetime.combine(target_date, datetime.min.time(), tzinfo=UTC3)
+    start = datetime.combine(target_date, datetime.min.time(), tzinfo=UTC2)
     end   = start + timedelta(days=1)
     authors: set[int] = set()
 

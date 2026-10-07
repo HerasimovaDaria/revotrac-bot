@@ -10,16 +10,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN             = os.getenv("DISCORD_BOT_TOKEN", "")
-PM_USER_ID        = int(os.getenv("PM_USER_ID", "0"))
+LEAD_USER_ID      = int(os.getenv("LEAD_USER_ID") or os.getenv("PM_USER_ID") or "0")
 # Support both variable names (RENORMALIZE_TOKEN is the real JWT, RENORMALIZE_API_KEY is legacy)
 RENORMALIZE_API_KEY = os.getenv("RENORMALIZE_TOKEN") or os.getenv("RENORMALIZE_API_KEY", "")
 # Default channel with daily reports (text or forum) for subscribers without !setchannel.
 # 0 → no default (report check only for those who ran !setchannel).
 REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID") or 0)
-# Evening "you haven't posted your daily report" DM, HH:MM UTC+3
+# Evening "you haven't posted your daily report" DM, HH:MM UTC+2
 REMINDER_HOUR, REMINDER_MINUTE = (int(x) for x in (os.getenv("REMINDER_TIME") or "19:00").split(":"))
+# "Hasn't started work yet" alert, HH:MM UTC+2 — checks for 0 hours logged and no day off
+MIDDAY_HOUR, MIDDAY_MINUTE     = (int(x) for x in (os.getenv("MIDDAY_CHECK_TIME") or "13:00").split(":"))
 
-UTC3    = timezone(timedelta(hours=3))   # fixed offset — every user-facing time is "UTC+3"
+UTC2    = timezone(timedelta(hours=2))   # fixed offset — every user-facing time is "UTC+2"
 DB_PATH = os.getenv("DB_PATH") or "hours.db"   # on Railway point it to the Volume, e.g. /data/hours.db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -29,16 +31,18 @@ log = logging.getLogger(__name__)
 # Team roster
 # ---------------------------------------------------------------------------
 
-# (display_name_ru, display_name_en, daily_target_hours, weekly_target_hours)
+# (display_name, display_name, daily_target_hours, weekly_target_hours) — both name slots
+# are the same English name now (see RENAMED_TEAM_MEMBERS below for the migration from the
+# old Russian display names this roster used before).
 TEAM: list[tuple[str, str, float, float]] = [
-    ("Лёша Седин",          "Aleksey Siedin",        8.0, 40.0),
-    ("Лёша Думалин",        "Alexey Dumailenko",     8.0, 40.0),
-    ("Самвел",              "Samvel Hovhannisyan",   8.0, 40.0),
-    ("Андрей Соколовский",  "Andrii Sokolovskyi",    8.0, 40.0),
-    ("Давид",               "David Dohru",           8.0, 40.0),
-    ("Георгий",             "George Kokashvilli",    8.0, 40.0),
-    ("Сергей Безруков",     "Sergii Bezrukov",       5.0, 25.0),
-    ("Станислав Селиванов", "Stanislav Selivanov",   2.0, 10.0),
+    ("Aleksey Siedin",        "Aleksey Siedin",        8.0, 40.0),
+    ("Alexey Dumailenko",     "Alexey Dumailenko",     8.0, 40.0),
+    ("Samvel Hovhannisyan",   "Samvel Hovhannisyan",   8.0, 40.0),
+    ("Andrii Sokolovskyi",    "Andrii Sokolovskyi",    8.0, 40.0),
+    ("David Dohru",           "David Dohru",           8.0, 40.0),
+    ("George Kokashvilli",    "George Kokashvilli",    8.0, 40.0),
+    ("Sergii Bezrukov",       "Sergii Bezrukov",       5.0, 25.0),
+    ("Stanislav Selivanov",   "Stanislav Selivanov",   2.0, 10.0),
 ]
 
 MEMBER_NAMES   = [m[0] for m in TEAM]
@@ -48,18 +52,34 @@ WEEKLY_TARGET: dict[str, float] = {m[0]: m[3] for m in TEAM}
 # Renormalize user IDs — find them with !findmembers,
 # or manually: open the employee's report in Renormalize, the ID is in the URL: ?id=XXXXX
 RENORMALIZE_IDS: dict[str, Optional[int]] = {
-    "Лёша Седин":          76544,
-    "Лёша Думалин":        76542,
-    "Самвел":              76632,
-    "Андрей Соколовский":  76607,
-    "Давид":               76537,
-    "Георгий":             76536,
-    "Сергей Безруков":     76718,
-    "Станислав Селиванов": 76657,
+    "Aleksey Siedin":        76544,
+    "Alexey Dumailenko":     76542,
+    "Samvel Hovhannisyan":   76632,
+    "Andrii Sokolovskyi":    76607,
+    "David Dohru":           76537,
+    "George Kokashvilli":    76536,
+    "Sergii Bezrukov":       76718,
+    "Stanislav Selivanov":   76657,
+}
+
+# One-time DB migration: TEAM members used to be keyed by a Russian display name
+# (subscriptions.member / discord_links.member stored that exact string as their primary
+# key). db.init_db() renames any existing row under the old name to the new one below, so
+# nobody's existing subscription/link silently stops matching. Safe to run repeatedly —
+# a name that's already been renamed just won't be found a second time.
+RENAMED_TEAM_MEMBERS: dict[str, str] = {
+    "Лёша Седин":          "Aleksey Siedin",
+    "Лёша Думалин":        "Alexey Dumailenko",
+    "Самвел":              "Samvel Hovhannisyan",
+    "Андрей Соколовский":  "Andrii Sokolovskyi",
+    "Давид":               "David Dohru",
+    "Георгий":             "George Kokashvilli",
+    "Сергей Безруков":     "Sergii Bezrukov",
+    "Станислав Селиванов": "Stanislav Selivanov",
 }
 
 # Renormalize IDs that /addmember is allowed to *suggest* by name (engineering-adjacent
-# roles only — not sales, HR, or other departments; curated by the PM). Adding someone by
+# roles only — not sales, HR, or other departments; curated by the Lead). Adding someone by
 # a known Renormalize ID directly still works regardless of this list — this only limits
 # what shows up when searching/autocompleting by name, so the bot doesn't surface the
 # whole company directory. Edit this set (and redeploy) to change who's suggestable.

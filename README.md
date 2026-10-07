@@ -25,18 +25,18 @@ APScheduler + SQLite.
 
 ### Morning report
 
-Sent on workdays at the time each subscriber picked with `/settime` (default 09:00 UTC+3).
+Sent on workdays at the time each subscriber picked with `/settime` (default 09:00 UTC+2).
 
 1. **Which day.** The last workday: Tue–Fri → yesterday, Monday → Friday. Nothing is sent on weekends.
 2. **Hours.** Pulled from Renormalize (`/v1/time/progression`) and compared to the person's daily target:
    - target met — fine;
    - 🟡 short by less than an hour;
    - 🔴 short by more than an hour.
-3. **Daily report check.** The bot reads the subscriber's reports channel for that day (00:00–23:59 UTC+3):
+3. **Daily report check.** The bot reads the subscriber's reports channel for that day (00:00–23:59 UTC+2):
    - any message from the person themselves counts;
    - if another bot posted the report (e.g. a "Daily Reports" bot), the author is read from an embed field named `Developer`/`Author`/`User` (or their Russian equivalents, for reports already posted that way) — if a `Date` field names a different day, it doesn't count;
    - both plain text channels and forums work (forums: all posts, including archived ones).
-4. **What shows up.** Only people with an issue: an hours shortfall and/or a missing report. Each flagged person also gets their month-to-date shortfall (hours still owed since the 1st of the month, at their daily target × workdays elapsed) — someone can be fine for the month but short today, or the other way round. Everyone with no issue is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
+4. **What shows up.** Anyone with a shortfall, a meaningful surplus (🔵 — more than an hour over target, i.e. overtime), or a missing report. Each flagged person also gets their month-to-date delta (ahead or behind, since the 1st of the month at their daily target × workdays elapsed) — someone can be fine for the month but short today, or the other way round. Everyone with no issue (on target, report posted) is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
 5. **Weekly and monthly.** Friday's report also includes weekly hours progress for everyone (same as `/weekly`, on demand any day). `/monthly` is separate — month-to-date, **only people who are behind** (everyone else is omitted, not just summarized).
 
 Example:
@@ -45,14 +45,23 @@ Example:
 ### Friday, October 2
 🔴 David · 6.8 of 8h today · 4.2h behind this month · no report
 🟡 George · 7.5 of 8h today · on track this month
+🔵 Sergii · 10.2 of 8h today · over target today · 6.1h ahead this month
 🟡 Jane Doe · no report
--# The other 4 — no issues
+-# The other 3 — no issues
 ```
+
+### Midday "hasn't started" alert
+
+On workdays at `MIDDAY_CHECK_TIME` (default 13:00 UTC+2), each subscriber gets a DM about
+anyone in their subscription with **0 hours logged so far today** and no day off/sick
+leave/absence on record. Doesn't necessarily mean something's wrong — they might just not
+have started yet, or Renormalize hasn't synced their leave — but it surfaces it mid-day
+instead of only finding out in tomorrow's report.
 
 ### Evening reminders
 
 A subscriber turns them on with `/reminders on`. On workdays at `REMINDER_TIME` (default
-19:00 UTC+3), the bot checks that subscriber's reports channel for **today**. Everyone in
+19:00 UTC+2), the bot checks that subscriber's reports channel for **today**. Everyone in
 their subscription without a report gets a DM. People on vacation/sick leave/absence that
 day are skipped. Someone in several subscriptions still gets just one message.
 
@@ -60,22 +69,22 @@ day are skipped. Someone in several subscriptions still gets just one message.
 
 Two layers:
 
-- **PM (`PM_USER_ID`)** — one fixed Discord ID, set once in the environment. Always has
-  access to everything, and is the only one who can run PM-only commands:
+- **Lead (`LEAD_USER_ID`)** — one fixed Discord ID, set once in the environment. Always has
+  access to everything, and is the only one who can run Lead-only commands:
   - `/removemember` — remove a manually-added person
   - `/findmembers` — list everyone in the Renormalize workspace with their ID
   - `/alloweduser` — manage who else can use the bot (see below)
 
-  Without `PM_USER_ID` set, the bot refuses to start.
+  Without `LEAD_USER_ID` set, the bot refuses to start.
 
-- **Allowed users** — everyone else needs explicit access, managed entirely at runtime
-  (no redeploy needed):
+- **Allowed users** — everyone else (the PMs who actually use the bot day to day) needs
+  explicit access, managed entirely at runtime (no redeploy needed):
   ```
   /alloweduser add      — grant access (pick a Discord nickname or paste an ID)
   /alloweduser remove   — revoke access
   /alloweduser list     — show who currently has access
   ```
-  Anyone not on this list (and not the PM) gets an explicit "🚫 You don't have access to
+  Anyone not on this list (and not the Lead) gets an explicit "🚫 You don't have access to
   this bot" instead of being silently ignored.
 
   The first time this feature runs, everyone who already had a subscription or a saved
@@ -102,8 +111,10 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | Command | What it does |
 |---|---|
 | `/start` | Quick guide |
-| `/subscribe` | Choose who appears in your report |
-| `/settime 09:00` | Your morning report time (UTC+3); no argument shows the current one |
+| `/subscribe` | Choose who appears in your report (checkbox list — chunked past 25 people) |
+| `/track <person>` | Add one person to your subscription — searchable (`!track` also takes a comma-separated list for bulk adds) |
+| `/untrack <person>` | Remove one person from your subscription — searchable (same bulk-list support via `!untrack`) |
+| `/settime 09:00` | Your morning report time (UTC+2); no argument shows the current one |
 | `/report` | Get a report for the last workday right now |
 | `/weekly` | Hours progress for the current week |
 | `/monthly` | Who's behind this month — only people with a shortfall |
@@ -113,28 +124,25 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | `/linkdiscord <person> <discord>` | Link a tracked person to a Discord account (autocompletes both fields) |
 | `/setchannel [channel_id]` | Set your reports channel — run it in the target channel, or pass an ID |
 | `/reminders on\|off` | Evening reminders for your subscription |
-| `/removemember <id or name>` | Remove a manually-added person (**PM only**) |
-| `/findmembers` | List everyone in Renormalize with their ID and status (**PM only**) |
-| `/alloweduser add\|remove\|list [discord]` | Manage who can use the bot (**PM only**) |
-
-(`!testapi` also exists — a one-off debugging command with hardcoded test IDs/dates,
-`!`-only and PM-only. Not meant for regular use.)
+| `/removemember <id or name>` | Remove a manually-added person (**Lead only**) |
+| `/findmembers` | List everyone in Renormalize with their ID and status (**Lead only**) |
+| `/alloweduser add\|remove\|list [discord]` | Manage who can use the bot (**Lead only**) |
 
 ---
 
 ## Typical scenarios
 
-**A director wants to know which PMs haven't posted their own report**
+**The Lead wants to know which PMs haven't posted their own report**
 1. Add the PMs: `/addperson <name> <discord>`.
-2. Director: `/subscribe` (pick the PMs) → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
+2. Lead: `/subscribe` (pick the PMs) → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
 
 **A PM tracks their developers' hours and reports**
-1. If a developer isn't in `/members` yet, add them: `/addmember` (type their name, pick the suggestion).
+1. If a developer isn't already tracked (check `/members`), use `/track <name>` — or `/addmember` if they're not in the roster at all yet.
 2. Link them to Discord: `/linkdiscord`.
-3. PM: `/subscribe` → `/setchannel` in the devs' channel → `/settime`.
+3. PM: `/setchannel` in the devs' channel → `/settime`.
 
-**Granting bot access to a new PM/director**
-1. PM: `/alloweduser add`, pick the person from the nickname suggestions (or paste their Discord ID).
+**Granting a new PM access to the bot**
+1. Lead: `/alloweduser add`, pick the person from the nickname suggestions (or paste their Discord ID).
 2. They need to share at least one Discord server with the bot — Discord doesn't allow DMs between users/bots without one. If they're not already on a shared server, either add them to the team's server, or set up a small private server with just them and the bot invited to it.
 
 ---
@@ -152,11 +160,12 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | Variable | Required | Description |
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | yes | Bot token |
-| `PM_USER_ID` | yes | The admin's Discord ID (see **Access control** above) |
+| `LEAD_USER_ID` | yes | The Lead's Discord ID (see **Access control** above) |
 | `RENORMALIZE_TOKEN` | recommended | Renormalize API JWT. Without it, hours are randomized (mock mode) |
 | `REPORTS_CHANNEL_ID` | no | Default reports channel for subscribers who haven't run `/setchannel` |
 | `DB_PATH` | no | SQLite file path, defaults to `hours.db` |
-| `REMINDER_TIME` | no | Evening reminder time `HH:MM` (UTC+3), defaults to `19:00` |
+| `REMINDER_TIME` | no | Evening reminder time `HH:MM` (UTC+2), defaults to `19:00` |
+| `MIDDAY_CHECK_TIME` | no | "Hasn't started work" alert time `HH:MM` (UTC+2), defaults to `13:00` |
 
 See `.env.example` for a template.
 
@@ -192,7 +201,7 @@ duplicated replies and duplicated scheduled DMs to real people.
 | `preferences` | report time, own reports channel, reminders on/off |
 | `custom_members` | people added via `/addmember` / `/addperson` (the latter get a negative ID and a 0h target) |
 | `discord_links` | tracked person → Discord ID |
-| `allowed_users` | Discord IDs allowed to use the bot (besides the PM) — managed with `/alloweduser` |
+| `allowed_users` | Discord IDs allowed to use the bot (besides the Lead) — managed with `/alloweduser` |
 
 Day offs aren't stored here at all — they're read live from Renormalize on every report
 (see **Day off** above).
