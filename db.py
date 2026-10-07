@@ -1,8 +1,12 @@
-"""SQLite data layer: day-offs, subscriptions, custom members, discord links, preferences."""
+"""SQLite data layer: subscriptions, custom members, discord links, preferences, access control.
+
+Day offs/sick leave/absence are no longer tracked here — they're read live from Renormalize
+(see renormalize.fetch_day_offs). An older `day_offs` table may still exist in the database
+file from before this change; it's unused and harmless to leave in place.
+"""
 
 import os
 import sqlite3
-from datetime import date
 from typing import Optional
 
 from config import DB_PATH, RENORMALIZE_IDS, REPORTS_CHANNEL_ID, TEAM
@@ -12,15 +16,6 @@ def init_db() -> None:
     if os.path.dirname(DB_PATH):
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS day_offs (
-                member TEXT NOT NULL,
-                day    TEXT NOT NULL,   -- ISO YYYY-MM-DD
-                PRIMARY KEY (member, day)
-            )
-            """
-        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS subscriptions (
@@ -92,27 +87,6 @@ def init_db() -> None:
                     [(uid,) for uid in existing_ids],
                 )
         conn.commit()
-
-
-# --- day-off helpers --------------------------------------------------------
-
-def save_day_offs(members: list[str], day: date) -> None:
-    day_str = day.isoformat()
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM day_offs WHERE day = ?", (day_str,))
-        conn.executemany(
-            "INSERT OR IGNORE INTO day_offs (member, day) VALUES (?, ?)",
-            [(m, day_str) for m in members],
-        )
-        conn.commit()
-
-
-def get_day_offs(day: date) -> set[str]:
-    with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute(
-            "SELECT member FROM day_offs WHERE day = ?", (day.isoformat(),)
-        ).fetchall()
-    return {r[0] for r in rows}
 
 
 # --- subscription helpers ---------------------------------------------------

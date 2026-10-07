@@ -66,3 +66,11 @@ def previous_workday(d: date) -> date:
     while prev.weekday() >= 5:
         prev -= timedelta(days=1)
     return prev
+
+
+def workdays_between(start: date, end: date) -> int:
+    """Count Mon–Fri days in [start, end], inclusive. 0 if end < start."""
+    if end < start:
+        return 0
+    return sum(1 for i in range((end - start).days + 1)
+               if (start + timedelta(days=i)).weekday() < 5)

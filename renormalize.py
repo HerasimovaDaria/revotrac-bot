@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 
 from config import RENORMALIZE_API_KEY, UTC3, log
 from db import _all_members, _all_renormalize_ids
+from utils import workdays_between
 
 # ---------------------------------------------------------------------------
 # Workspace user directory — GET /v1/users (NOT /members, which is 501 Not Implemented).
@@ -188,3 +189,143 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
                 log.exception("fetch_week_hours failed for %s: %s", name, exc)
 
     return totals
+
+
+async def fetch_month_hours(target_date: date) -> dict[str, float]:
+    """
+    Return *effective* hours worked per team member from the 1st of *target_date*'s month
+    through *target_date* (inclusive): actual logged hours, plus the full daily target
+    credited for any workday covered by a vacation/sick-leave/absence record — Renormalize
+    treats approved leave as fully worked, not a shortfall, so this matches that. 1 API call
+    per member for hours, plus 1 (cached) for their leave record.
+    """
+    month_start = target_date.replace(day=1)
+    all_m       = _all_members()
+    all_ids     = _all_renormalize_ids()
+    totals: dict[str, float] = {m[0]: 0.0 for m in all_m}
+
+    if not RENORMALIZE_API_KEY:
+        workdays = workdays_between(month_start, target_date)
+        for name, _en, daily, _ in all_m:
+            if not daily:
+                continue
+            totals[name] = round(random.gauss(daily * workdays * 0.85, daily * workdays * 0.1 or 1), 2)
+        return totals
+
+    import httpx
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+        for name, _en, daily, _ in all_m:
+            renorm_id = all_ids.get(name)
+            if renorm_id is None:
+                continue
+            try:
+                resp = await client.get(
+                    "https://api.renormalize.com/v1/time/progression",
+                    params={
+                        "user_ids": str(renorm_id),
+                        "start_at": month_start.isoformat(),
+                        "end_at":   (target_date + timedelta(days=1)).isoformat(),  # exclusive → +1
+                    },
+                    headers=headers,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                entries = resp.json().get(str(renorm_id), [])
+                total_sec = sum(e.get("total_time", 0) for e in entries)
+                worked    = total_sec / 3600
+
+                leave_credit = 0.0
+                if daily and renorm_id > 0:
+                    leave_days   = await _leave_workdays_in_range(renorm_id, month_start, target_date)
+                    leave_credit = daily * leave_days
+
+                totals[name] = round(worked + leave_credit, 2)
+            except Exception as exc:
+                log.exception("fetch_month_hours failed for %s: %s", name, exc)
+
+    return totals
+
+
+# ---------------------------------------------------------------------------
+# Day off / sick leave / absence — GET /v1/vacations?user_id=<id> (the name is
+# misleading: it returns every leave type — "vacation", "sick_leave", "absence" — not
+# just vacations). No manual day-off entry needed: we read it straight from Renormalize.
+# Only covers people with a Renormalize ID — report-only people (added via !addperson)
+# have no Renormalize account, so they can't be checked this way.
+# ---------------------------------------------------------------------------
+
+_LEAVE_CACHE_TTL = 1800   # seconds
+_leave_cache: dict[int, dict] = {}   # renorm_id -> {"data": [(start, end), ...], "ts": float}
+
+
+async def fetch_leave_records(renorm_id: int, force: bool = False) -> list[tuple[date, date]]:
+    """Return [(start_date, end_date), ...] for every leave record of this Renormalize user,
+    past and future. Cached per ID for _LEAVE_CACHE_TTL seconds.
+    """
+    now    = time.monotonic()
+    cached = _leave_cache.get(renorm_id)
+    if not force and cached and now - cached["ts"] < _LEAVE_CACHE_TTL:
+        return cached["data"]
+    if not RENORMALIZE_API_KEY:
+        return []
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://api.renormalize.com/v1/vacations",
+                params={"user_id": str(renorm_id)},
+                headers={"Authorization": f"Bearer {RENORMALIZE_API_KEY}"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            raw = resp.json()
+    except Exception as exc:
+        log.warning("fetch_leave_records failed for %s: %s", renorm_id, exc)
+        return cached["data"] if cached else []
+
+    records: list[tuple[date, date]] = []
+    for rec in raw:
+        try:
+            start = date.fromisoformat(rec["start"][:10])
+            end   = date.fromisoformat(rec["end"][:10])
+            records.append((start, end))
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    _leave_cache[renorm_id] = {"data": records, "ts": now}
+    return records
+
+
+async def _leave_workdays_in_range(renorm_id: int, start: date, end: date) -> int:
+    """Count distinct Mon–Fri days in [start, end] covered by any leave record (any type)."""
+    records = await fetch_leave_records(renorm_id)
+    covered: set[date] = set()
+    for rec_start, rec_end in records:
+        lo, hi = max(rec_start, start), min(rec_end, end)
+        d = lo
+        while d <= hi:
+            if d.weekday() < 5:
+                covered.add(d)
+            d += timedelta(days=1)
+    return len(covered)
+
+
+async def fetch_day_offs(target_date: date) -> set[str]:
+    """Return display names of everyone on vacation/sick leave/absence in Renormalize on
+    *target_date*. Report-only people (no Renormalize ID) are never included — there's no
+    leave data to check for them.
+    """
+    off: set[str] = set()
+    all_ids = _all_renormalize_ids()
+    for name, _en, _daily, _weekly in _all_members():
+        renorm_id = all_ids.get(name)
+        if not renorm_id or renorm_id < 0:
+            continue
+        for start, end in await fetch_leave_records(renorm_id):
+            if start <= target_date <= end:
+                off.add(name)
+                break
+    return off

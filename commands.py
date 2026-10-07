@@ -38,10 +38,9 @@ from db import (
     save_reminders,
     save_reports_channel,
 )
-from renormalize import fetch_all_renormalize_users, fetch_week_hours
-from reports.formatting import format_weekly_report
+from renormalize import fetch_all_renormalize_users, fetch_month_hours, fetch_week_hours
+from reports.formatting import format_monthly_report, format_weekly_report
 from routines import _build_report_text, _collect_report_data
-from ui.dayoff import DayOffView
 from ui.subscribe import SubscribeView, _subscribe_prompt
 from utils import _find_member, _resolve_discord_user, previous_workday, week_start
 
@@ -106,64 +105,30 @@ async def cmd_report(ctx: commands.Context) -> None:
     today     = datetime.now(UTC3).date()
     yesterday = previous_workday(today)
 
-    hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
+    hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(bot, yesterday)
 
-    text = await _build_report_text(bot, user_id, yesterday, hours, week_hours, day_offs, members, authors)
+    text = await _build_report_text(bot, user_id, yesterday, hours, week_hours, month_hours,
+                                    day_offs, members, authors)
     await _reply(ctx, text)
-
-
-@bot.hybrid_command(name="dayoff", description="Mark who's off on a given day (PM only)")
-@app_commands.describe(date_str="Date DD.MM, defaults to today")
-@app_commands.rename(date_str="date")
-async def cmd_dayoff(ctx: commands.Context, date_str: Optional[str] = None) -> None:
-    """!dayoff [DD.MM] — open day-off selector for a given date (PM only)."""
-    if ctx.author.id != PM_USER_ID:
-        await _deny(ctx)
-        return
-
-    if date_str:
-        try:
-            today  = datetime.now(UTC3).date()
-            parsed = datetime.strptime(date_str, "%d.%m").replace(year=today.year).date()
-        except ValueError:
-            await ctx.send("❌ Invalid format. Example: `!dayoff 25.05`")
-            return
-    else:
-        parsed = datetime.now(UTC3).date()
-
-    view = DayOffView(parsed)
-    await _reply(ctx, f"📅 **Who's off on {parsed.strftime('%d.%m.%Y')}?**", view=view)
 
 
 @bot.hybrid_command(name="start", description="What this bot does and how to set it up")
 async def cmd_start(ctx: commands.Context) -> None:
     """!start — onboarding: show what this bot does and how to set it up."""
     text = (
-        "👋 **Hi! I track the team's hours in Renormalize.**\n"
-        "Every morning I'll DM you a report on the people you choose.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "**🚀 Quick start — 3 steps:**\n\n"
-        "**1. See who's already tracked**\n"
-        "```\n!members\n```\n"
-        "**2. If someone's missing — add them**\n"
-        "```\n!addmember First Last\n```\n"
-        "*(or `/addmember` — Discord will suggest the name straight from Renormalize)*\n\n"
-        "**3. Subscribe to the people you want and pick your report time**\n"
-        "```\n!subscribe\n!settime 09:00\n```\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "**📋 All commands:**\n\n"
-        "`!members` — list everyone available for tracking\n"
-        "`!addmember <name>` — add a person (autocomplete in `/addmember`)\n"
-        "`!subscribe` — choose whose hours to see in your report\n"
-        "`!linkdiscord <name> <ID>` — link Discord for daily-report checks\n"
-        "`!addperson <name> <ID>` — add a person without Renormalize (reports only)\n"
-        "`!setchannel` — run this in a channel to check daily reports there\n"
-        "`!settime HH:MM` — your daily report time (UTC+3, default 09:00)\n"
-        "`!reminders on` — evening DM to your subscription's people who haven't reported\n"
-        "`!report` — get a report right now\n"
-        "`!weekly` — progress for the current week\n"
-        "`!start` — show this guide again\n\n"
-        "💡 Every command also works with `/` — Discord will show hints.\n"
+        "**Renormalize Tracker** — DMs you a morning report on your team's hours and "
+        "daily reports.\n\n"
+        "**Do this to get it working:**\n"
+        "```\n"
+        "/subscribe          — pick who you want reports on\n"
+        "/settime 09:00      — when you want your report (UTC+3)\n"
+        "```\n"
+        "That's it — tomorrow morning you'll get a DM with only the people who need "
+        "attention. Vacations and sick leave are detected automatically.\n\n"
+        "**Also useful:** `/report` (get it now) · `/weekly` (week progress) · "
+        "`/monthly` (who's behind this month) · `/reminders on` (auto-nudge people who "
+        "forgot) · `/members` (who's tracked)\n\n"
+        "-# No access? Ask the Head of PM for `/alloweduser add`."
     )
     await _reply(ctx, text)
 
@@ -189,6 +154,34 @@ async def cmd_weekly(ctx: commands.Context) -> None:
     week_hours = await fetch_week_hours(wb)
     text       = format_weekly_report(wb, week_hours, members) or "None of your people have a weekly hour target."
 
+    await _reply(ctx, text)
+
+
+@bot.hybrid_command(name="monthly", description="Who's behind this month — only people with a shortfall")
+async def cmd_monthly(ctx: commands.Context) -> None:
+    """!monthly — show month-to-date hours shortfall for your subscribed members (behind only)."""
+    user_id = ctx.author.id
+    members = get_subscription(user_id)
+
+    if not members:
+        await _reply(
+            ctx,
+            "⚠️ You don't have a subscription.\n"
+            "Use `/subscribe` to choose whose hours you want to see."
+        )
+        return
+
+    await _working(ctx)
+
+    today = datetime.now(UTC3).date()
+    try:
+        month_hours = await fetch_month_hours(today)
+    except Exception as exc:
+        log.exception("fetch_month_hours failed: %s", exc)
+        await _reply(ctx, "❌ Couldn't fetch hours from Renormalize. Try again in a bit.")
+        return
+
+    text = format_monthly_report(today, month_hours, members)
     await _reply(ctx, text)
 
 
@@ -375,7 +368,7 @@ async def cmd_addperson(ctx: commands.Context, *, args: str = "") -> None:
     if len(parts) < 2:
         await ctx.send(
             "❌ Format: `!addperson <name> <@user | nick | Discord ID>`\n"
-            "Example: `!addperson Daria Herasimova 954344819092783184`"
+            "Example: `!addperson Jane Doe 954344819092783184`"
         )
         return
 
