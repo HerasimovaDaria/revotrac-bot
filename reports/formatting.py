@@ -11,10 +11,9 @@ def status_emoji(worked: float, target: float, day_off: bool) -> str:
     if day_off:
         return "✅"
     diff = worked - target
-    if diff > 1:       return "🔵"   # meaningfully over target — surfaced too, not just shortfalls
-    if diff >= 0:      return "✅"
-    if diff >= -1:     return "🟡"
-    return "🔴"
+    if diff > 3:       return "🔵"   # overtime — more than 3h over target
+    if diff < -2:      return "🔴"   # under-track — more than 2h behind
+    return "✅"
 
 
 MONTHS   = ["January", "February", "March", "April", "May", "June", "July",
@@ -48,9 +47,9 @@ def format_daily_report(
     report_authors: Optional[set[int]] = None,    # None → report check disabled
     month_hours:    Optional[dict[str, float]] = None,   # None → skip the month-to-date figure
 ) -> str:
-    """Show members with an hours shortfall, a meaningful surplus (overtime), or a
-    missing daily report — everyone exactly on target with a report is folded into the
-    "no issues" summary line."""
+    """Show members more than 2h behind today, more than 3h over target today (overtime,
+    listed separately under "OverTimes:"), or missing a daily report — everyone else is
+    folded into the "no issues" summary line."""
     header = f"### {_day_title(report_date)}\n"
 
     active = [(n, d, w) for n, _en, d, w in _all_members()
@@ -58,8 +57,9 @@ def format_daily_report(
 
     links = get_discord_links()
 
-    lines:    list[str] = []
-    unlinked: list[str] = []
+    behind:    list[str] = []
+    overtime:  list[str] = []
+    unlinked:  list[str] = []
     for name, daily, _ in active:
         if name in day_offs:
             continue                      # day off is not a problem
@@ -71,7 +71,7 @@ def format_daily_report(
             unlinked.append(name)
         if not daily:                     # report-only person: hours don't matter
             if no_report:
-                lines.append(f"🟡 **{name}** · no report")
+                behind.append(f"🟡 **{name}** · no report")
             continue
         if emoji == "✅" and not no_report:
             continue
@@ -89,13 +89,17 @@ def format_daily_report(
                 line += " · on track this month"
         if no_report:
             line += " · no report"
-        lines.append(line)
+        (overtime if emoji == "🔵" else behind).append(line)
 
-    ok = len(active) - len(lines)
-    if not lines:
+    ok = len(active) - len(behind) - len(overtime)
+    lines = list(behind)
+    if not lines and not overtime:
         lines.append("Nothing to flag" if ok == 1 else f"Nothing to flag — all {ok} are on track")
     elif ok:
         lines.append(f"-# The other {ok} — no issues")
+    if overtime:
+        lines.append("\n**OverTimes:**")
+        lines.extend(overtime)
     if unlinked:
         lines.append(
             f"-# Report not checked, no Discord link: {', '.join(unlinked)}. "

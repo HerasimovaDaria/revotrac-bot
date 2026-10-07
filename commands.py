@@ -44,7 +44,6 @@ from db import (
 from renormalize import fetch_all_renormalize_users, fetch_month_hours, fetch_week_hours
 from reports.formatting import format_monthly_report, format_weekly_report
 from routines import _build_report_text, _collect_report_data
-from ui.subscribe import SubscribeView, _subscribe_prompt
 from utils import _find_member, _resolve_discord_user, previous_workday, week_start
 
 # ---------------------------------------------------------------------------
@@ -79,16 +78,6 @@ async def _deny(ctx: commands.Context) -> None:
         await ctx.message.add_reaction("🚫")
 
 
-@bot.hybrid_command(name="subscribe", description="Choose which people appear in your morning report")
-async def cmd_subscribe(ctx: commands.Context) -> None:
-    """!subscribe — choose which team members appear in your daily reports."""
-    user_id = ctx.author.id
-    current = get_subscription(user_id)
-    view    = SubscribeView(user_id)
-
-    await _reply(ctx, _subscribe_prompt(current), view=view)
-
-
 @bot.hybrid_command(name="report", description="Get a report for the last workday right now")
 async def cmd_report(ctx: commands.Context) -> None:
     """!report — trigger your personalized morning report right now."""
@@ -99,7 +88,7 @@ async def cmd_report(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
+            "Use `/track <name>` to add people."
         )
         return
 
@@ -134,8 +123,7 @@ async def cmd_start(ctx: commands.Context) -> None:
         "`/tracklist` — see who you're tracking\n"
         "`/settime HH:MM` — set or check your report time\n"
         "`/report` — get your report right now, don't wait for tomorrow\n\n"
-        "**Also useful:** `/subscribe` (bulk pick/browse everyone instead of one by one) · "
-        "`/weekly` (week progress) · `/monthly` (who's behind this month) · "
+        "**Also useful:** `/weekly` (week progress) · `/monthly` (who's behind this month) · "
         "`/members` (who's tracked)\n\n"
         "-# No access? Ask the Lead for `/alloweduser add`."
     )
@@ -152,7 +140,7 @@ async def cmd_weekly(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
+            "Use `/track <name>` to add people."
         )
         return
 
@@ -176,7 +164,7 @@ async def cmd_monthly(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
+            "Use `/track <name>` to add people."
         )
         return
 
@@ -223,7 +211,7 @@ async def cmd_members(ctx: commands.Context) -> None:
             else:
                 lines.append(f"`{rid}` — {dname}  ({daily:.0f}h/day){link_str(dname)}")
 
-    lines.append("\n➕ Add: `!addmember <renormalize_id> <name>`")
+    lines.append("\n➕ Add: `!adddevelopertolist <renormalize_id> <name>`")
     lines.append("📝 No hours, reports only: `!addperson <name> <ID>`")
     lines.append("🔗 Link Discord: `!linkdiscord <name> @user`")
 
@@ -271,7 +259,7 @@ async def _renormalize_user_autocomplete(
 ) -> list[app_commands.Choice[str]]:
     """Live-search Renormalize accounts by name or email — curated candidates only
     (ADDMEMBER_CANDIDATE_IDS), active, not already tracked. A known ID outside this
-    list can still be added directly in !addmember/#addmember's numeric-ID path —
+    list can still be added directly via /adddevelopertolist's numeric-ID path —
     this only limits what gets *suggested* by name, so the bot doesn't surface the
     whole company directory (sales, HR, other departments, …)."""
     try:
@@ -293,21 +281,29 @@ async def _renormalize_user_autocomplete(
     ]
 
 
-@bot.hybrid_command(name="addmember", description="Add a person — start typing a name, Renormalize suggests it")
+@bot.hybrid_command(name="adddevelopertolist", description="Add a person — start typing a name, Renormalize suggests it (Lead only)")
 @app_commands.describe(person="Start typing a name — pick a suggestion (or paste a Renormalize ID)")
 @app_commands.rename(person="person")
 @app_commands.autocomplete(person=_renormalize_user_autocomplete)
-async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
-    """!addmember <name or Renormalize ID> — add a person found live in Renormalize."""
+async def cmd_add_developer_to_list(ctx: commands.Context, *, person: str) -> None:
+    """!adddevelopertolist <name or Renormalize ID> — add a person found live in Renormalize (Lead only)."""
+    if ctx.author.id != LEAD_USER_ID:
+        msg = f"🚫 Please contact <@{LEAD_USER_ID}> to add a developer."
+        if ctx.interaction:
+            await ctx.send(msg, ephemeral=ctx.guild is not None)
+        else:
+            await ctx.send(msg)
+        return
+
     person = person.strip()
     if not person:
-        await ctx.send("❌ Give a name or Renormalize ID. Example: `!addmember Ivan Petrov`.")
+        await ctx.send("❌ Give a name or Renormalize ID. Example: `!adddevelopertolist Ivan Petrov`.")
         return
 
     try:
         users = await fetch_all_renormalize_users()
     except Exception as exc:
-        log.exception("addmember: fetch_all_renormalize_users failed: %s", exc)
+        log.exception("adddevelopertolist: fetch_all_renormalize_users failed: %s", exc)
         await ctx.send("❌ Couldn't fetch the list from Renormalize. Try again in a bit.")
         return
 
@@ -330,14 +326,14 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
         if not candidates:
             await ctx.send(
                 f"❌ No match for «{person}» in Renormalize. Check the spelling — "
-                f"or use `/addmember`, it has live suggestions."
+                f"or use `/adddevelopertolist`, it has live suggestions."
             )
             return
         if len(candidates) > 1:
             lines = "\n".join(f"• {u['name']} — id `{u['id']}`" for u in candidates[:10])
             await ctx.send(
                 f"⚠️ Found several matches for «{person}»:\n{lines}\n\n"
-                f"Be more specific, or use `/addmember` with suggestions."
+                f"Be more specific, or use `/adddevelopertolist` with suggestions."
             )
             return
         match     = candidates[0]
@@ -357,7 +353,7 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
 async def _custom_member_autocomplete(
     interaction: discord.Interaction, current: str,
 ) -> list[app_commands.Choice[str]]:
-    """Only people actually in custom_members — the ones /removemember can act on
+    """Only people actually in custom_members — the ones /removedeveloperfromlist can act on
     (TEAM and CANDIDATE_ROSTER are baked into the code, not removable this way)."""
     cur = current.casefold()
     return [
@@ -367,12 +363,12 @@ async def _custom_member_autocomplete(
     ][:25]
 
 
-@bot.hybrid_command(name="removemember", description="Remove a manually-added person (Lead only)")
+@bot.hybrid_command(name="removedeveloperfromlist", description="Remove a manually-added person (Lead only)")
 @app_commands.describe(arg="Renormalize ID or name")
 @app_commands.rename(arg="who")
 @app_commands.autocomplete(arg=_custom_member_autocomplete)
-async def cmd_removemember(ctx: commands.Context, *, arg: str) -> None:
-    """!removemember <renormalize_id | name> — remove a custom member (Lead only)."""
+async def cmd_remove_developer_from_list(ctx: commands.Context, *, arg: str) -> None:
+    """!removedeveloperfromlist <renormalize_id | name> — remove a custom member (Lead only)."""
     if ctx.author.id != LEAD_USER_ID:
         await _deny(ctx)
         return
@@ -535,7 +531,7 @@ async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> 
     save_preference(ctx.author.id, hour, minute)
     await ctx.send(
         f"✅ Daily report time set: **{hour:02d}:{minute:02d} UTC+2**.\n"
-        f"Haven't picked people yet? Use `!track <name>` to add someone, or `!subscribe` to browse everyone."
+        f"Haven't picked people yet? Use `!track <name>` to add someone."
     )
 
 
@@ -566,11 +562,11 @@ async def cmd_tracklist(ctx: commands.Context) -> None:
 @app_commands.rename(member="person")
 @app_commands.autocomplete(member=_member_autocomplete)
 async def cmd_track(ctx: commands.Context, *, member: str) -> None:
-    """!track <name> — add one person to your subscription (searchable, unlike /subscribe's
-    checkbox list). See /tracklist for who you're currently tracking."""
+    """!track <name> — add one person to your subscription (searchable). See /tracklist for
+    who you're currently tracking."""
     name = _find_member(member)
     if name is None:
-        await ctx.send(f"❌ No match for «{member}» (or more than one). Try `/subscribe` to browse everyone.")
+        await ctx.send(f"❌ No match for «{member}» (or more than one). Check the spelling, or `/members` to browse everyone.")
         return
 
     current = get_subscription(ctx.author.id)
@@ -668,9 +664,9 @@ async def slash_addperson(interaction: discord.Interaction, name: str, user: str
     )
 
 
-@bot.hybrid_command(name="findmembers", description="List everyone in Renormalize with their ID (Lead only)")
-async def cmd_find_members(ctx: commands.Context) -> None:
-    """!findmembers — list all Renormalize workspace members with their IDs (Lead only)."""
+@bot.hybrid_command(name="renormalizeusers", description="List everyone in Renormalize with their ID (Lead only)")
+async def cmd_renormalize_users(ctx: commands.Context) -> None:
+    """!renormalizeusers — list all Renormalize workspace members with their IDs (Lead only)."""
     if ctx.author.id != LEAD_USER_ID:
         await _deny(ctx)
         return
@@ -683,7 +679,7 @@ async def cmd_find_members(ctx: commands.Context) -> None:
     try:
         members = await fetch_all_renormalize_users(force=True)
     except Exception as exc:
-        log.exception("findmembers API error: %s", exc)
+        log.exception("renormalizeusers API error: %s", exc)
         user = await bot.fetch_user(LEAD_USER_ID)
         await user.send(f"❌ Renormalize request failed:\n```{exc}```")
         await _reply(ctx, "❌ Renormalize request failed, details sent to your DMs.")

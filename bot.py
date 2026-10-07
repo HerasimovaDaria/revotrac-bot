@@ -3,11 +3,11 @@ Discord bot: daily team hours reports with day-off tracking and per-user subscri
 
 Morning routine (per-user configured time, default 09:00 UTC+2, Mon–Fri only):
   Personalized report for the PREVIOUS WORKDAY (on Monday — for Friday) — sent to every
-  subscriber. Lists only their members with an hours shortfall (🟡/🔴), a meaningful
-  surplus (🔵 — overtime), or no daily report in the subscriber's own channel
-  (!setchannel; default REPORTS_CHANNEL_ID), any message 00:00–23:59 UTC+2. People on
-  vacation/sick leave/absence in Renormalize that day are skipped (read live — no manual
-  day-off entry).
+  subscriber. Lists members more than 2h short of target (🔴), more than 3h over target
+  (🔵 — overtime, listed separately under "OverTimes:"), or missing a daily report in the
+  subscriber's own channel (!setchannel; default REPORTS_CHANNEL_ID), any message
+  00:00–23:59 UTC+2. People on vacation/sick leave/absence in Renormalize that day are
+  skipped (read live — no manual day-off entry).
   Weekly progress is appended only to the report for Friday.
 
 Midday alert (MIDDAY_CHECK_TIME, default 13:00 UTC+2, Mon–Fri): for every subscriber, a DM
@@ -17,8 +17,7 @@ record — a heads-up, not necessarily a problem.
 Evening reminder (REMINDER_TIME, default 19:00 UTC+2, Mon–Fri): for subscribers who ran
 !reminders on, everyone in their subscription without a report today gets a DM.
 
-Commands (also available as slash commands with autocomplete: /subscribe, /report, …):
-  !subscribe              — choose which team members appear in your daily reports
+Commands (also available as slash commands with autocomplete: /track, /report, …):
   !track <name>           — add one person to your subscription (searchable)
   !tracklist              — show who's in your subscription
   !untrack <name>         — remove one person from your subscription (searchable)
@@ -28,17 +27,17 @@ Commands (also available as slash commands with autocomplete: /subscribe, /repor
   !monthly                — show who's behind this month (shortfall only)
   !members                — list all people available for tracking (with Discord links)
   !linkdiscord <name> <@user|nick|id> — link a member to Discord (for daily-report checks)
-  !addmember <name|id>    — add a person found live in Renormalize (visible to everyone)
+  !adddevelopertolist <name|id> — add a person found live in Renormalize (Lead only)
   !addperson <name> <@user|nick|id> — add a person without Renormalize (daily-report check only)
-  !removemember <id|name> — remove a custom member (Lead only)
+  !removedeveloperfromlist <id|name> — remove a custom member (Lead only)
   !setchannel [id]        — use this channel (or channel id) as YOUR daily-reports channel
   !reminders [on|off]     — evening DM to people in your subscription who haven't posted a report
-  !findmembers            — list all Renormalize workspace members (Lead only)
+  !renormalizeusers       — list all Renormalize workspace members (Lead only)
   !alloweduser add|remove|list — manage who can use the bot (Lead only)
 
 The implementation is split across modules: config.py (settings/roster), db.py (SQLite),
 renormalize.py (hours + day-off API), reports/ (formatting + author detection),
-ui/ (Discord selectors), routines.py (scheduled delivery), commands.py (all bot commands).
+routines.py (scheduled delivery), commands.py (all bot commands).
 This file just wires them up.
 """
 
