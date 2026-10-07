@@ -2,8 +2,8 @@
 
 import logging
 import os
+from datetime import timedelta, timezone
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -19,7 +19,7 @@ REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID") or 0)
 # Evening "you haven't posted your daily report" DM, HH:MM UTC+3
 REMINDER_HOUR, REMINDER_MINUTE = (int(x) for x in (os.getenv("REMINDER_TIME") or "19:00").split(":"))
 
-MOSCOW  = ZoneInfo("Europe/Moscow")
+UTC3    = timezone(timedelta(hours=3))   # fixed offset — every user-facing time is "UTC+3"
 DB_PATH = os.getenv("DB_PATH") or "hours.db"   # on Railway point it to the Volume, e.g. /data/hours.db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

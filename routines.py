@@ -5,7 +5,7 @@ from typing import Optional
 
 from discord.ext import commands
 
-from config import MEMBER_NAMES, MOSCOW, PM_USER_ID, REMINDER_HOUR, REMINDER_MINUTE, log
+from config import MEMBER_NAMES, PM_USER_ID, REMINDER_HOUR, REMINDER_MINUTE, UTC3, log
 from db import (
     get_all_subscribers,
     get_day_offs,
@@ -104,7 +104,7 @@ async def send_morning_routine(
     Send personalized reports to every subscriber, then
     send the day-off selector to the PM.
     """
-    today     = datetime.now(MOSCOW).date()
+    today     = datetime.now(UTC3).date()
     yesterday = report_date or previous_workday(today)
 
     # Fetch data once; all subscribers share the same raw numbers
@@ -170,7 +170,7 @@ async def check_report_time(bot: commands.Bot) -> None:
     Sends personalized reports to every subscriber whose report time matches now,
     and sends the day-off selector to the PM at the PM's configured time.
     """
-    now  = datetime.now(MOSCOW)
+    now  = datetime.now(UTC3)
     h, m = now.hour, now.minute
     today     = now.date()
     if today.weekday() >= 5:          # no reports on Saturday / Sunday
