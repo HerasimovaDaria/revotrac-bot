@@ -99,7 +99,7 @@ async def cmd_report(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/subscribe` to choose whose hours you want to see in your report."
+            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
         )
         return
 
@@ -128,9 +128,14 @@ async def cmd_start(ctx: commands.Context) -> None:
         "```\n"
         "That's it — tomorrow morning you'll get a DM with only the people who need "
         "attention. Vacations and sick leave are detected automatically.\n\n"
-        "**Also useful:** `/tracklist` (who you're tracking) · `/subscribe` (bulk pick/browse "
-        "everyone instead of one by one) · `/untrack` (remove someone) · `/report` (get it "
-        "now) · `/weekly` (week progress) · `/monthly` (who's behind this month) · "
+        "**Main commands:**\n"
+        "`/track <name>` — add one person, searchable\n"
+        "`/untrack <name>` — remove one person\n"
+        "`/tracklist` — see who you're tracking\n"
+        "`/settime HH:MM` — set or check your report time\n"
+        "`/report` — get your report right now, don't wait for tomorrow\n\n"
+        "**Also useful:** `/subscribe` (bulk pick/browse everyone instead of one by one) · "
+        "`/weekly` (week progress) · `/monthly` (who's behind this month) · "
         "`/members` (who's tracked)\n\n"
         "-# No access? Ask the Lead for `/alloweduser add`."
     )
@@ -147,7 +152,7 @@ async def cmd_weekly(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/subscribe` to choose whose hours you want to see."
+            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
         )
         return
 
@@ -171,7 +176,7 @@ async def cmd_monthly(ctx: commands.Context) -> None:
         await _reply(
             ctx,
             "⚠️ You don't have a subscription.\n"
-            "Use `/subscribe` to choose whose hours you want to see."
+            "Use `/track <name>` to add people, or `/subscribe` to browse everyone."
         )
         return
 
@@ -345,7 +350,7 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
     add_custom_member(renorm_id, match["name"])
     await ctx.send(
         f"✅ Added: **{match['name']}** (id `{renorm_id}`)\n"
-        f"You can now pick them in `!subscribe`."
+        f"Track them: `!track {match['name']}`"
     )
 
 
@@ -411,7 +416,7 @@ async def cmd_addperson(ctx: commands.Context, *, args: str = "") -> None:
     add_report_only_member(name, user.id)
     await ctx.send(
         f"✅ Added **{name}** ({user.mention}) — no hours, only the daily-report check.\n"
-        f"You can now pick them in `!subscribe`.",
+        f"Track them: `!track {name}`",
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -530,7 +535,7 @@ async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> 
     save_preference(ctx.author.id, hour, minute)
     await ctx.send(
         f"✅ Daily report time set: **{hour:02d}:{minute:02d} UTC+2**.\n"
-        f"Haven't picked people yet? Use `!subscribe`."
+        f"Haven't picked people yet? Use `!track <name>` to add someone, or `!subscribe` to browse everyone."
     )
 
 
@@ -658,7 +663,7 @@ async def slash_addperson(interaction: discord.Interaction, name: str, user: str
     add_report_only_member(name, target.id)
     await interaction.response.send_message(
         f"✅ Added **{name}** ({target.mention}) — no hours, only the daily-report check.\n"
-        f"You can now pick them in `/subscribe`.",
+        f"Track them: `/track {name}`",
         ephemeral=ephemeral, allowed_mentions=discord.AllowedMentions.none(),
     )
 
