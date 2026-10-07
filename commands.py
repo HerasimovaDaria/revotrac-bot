@@ -211,7 +211,7 @@ async def cmd_members(ctx: commands.Context) -> None:
             else:
                 lines.append(f"`{rid}` — {dname}  ({daily:.0f}h/day){link_str(dname)}")
 
-    lines.append("\n➕ Add: `!addmember <renormalize_id> <name>`")
+    lines.append("\n➕ Add: `!adddevelopertolist <renormalize_id> <name>`")
     lines.append("📝 No hours, reports only: `!addperson <name> <ID>`")
     lines.append("🔗 Link Discord: `!linkdiscord <name> @user`")
 
@@ -259,7 +259,7 @@ async def _renormalize_user_autocomplete(
 ) -> list[app_commands.Choice[str]]:
     """Live-search Renormalize accounts by name or email — curated candidates only
     (ADDMEMBER_CANDIDATE_IDS), active, not already tracked. A known ID outside this
-    list can still be added directly in !addmember/#addmember's numeric-ID path —
+    list can still be added directly via /adddevelopertolist's numeric-ID path —
     this only limits what gets *suggested* by name, so the bot doesn't surface the
     whole company directory (sales, HR, other departments, …)."""
     try:
@@ -281,21 +281,21 @@ async def _renormalize_user_autocomplete(
     ]
 
 
-@bot.hybrid_command(name="addmember", description="Add a person — start typing a name, Renormalize suggests it")
+@bot.hybrid_command(name="adddevelopertolist", description="Add a person — start typing a name, Renormalize suggests it")
 @app_commands.describe(person="Start typing a name — pick a suggestion (or paste a Renormalize ID)")
 @app_commands.rename(person="person")
 @app_commands.autocomplete(person=_renormalize_user_autocomplete)
-async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
-    """!addmember <name or Renormalize ID> — add a person found live in Renormalize."""
+async def cmd_add_developer_to_list(ctx: commands.Context, *, person: str) -> None:
+    """!adddevelopertolist <name or Renormalize ID> — add a person found live in Renormalize."""
     person = person.strip()
     if not person:
-        await ctx.send("❌ Give a name or Renormalize ID. Example: `!addmember Ivan Petrov`.")
+        await ctx.send("❌ Give a name or Renormalize ID. Example: `!adddevelopertolist Ivan Petrov`.")
         return
 
     try:
         users = await fetch_all_renormalize_users()
     except Exception as exc:
-        log.exception("addmember: fetch_all_renormalize_users failed: %s", exc)
+        log.exception("adddevelopertolist: fetch_all_renormalize_users failed: %s", exc)
         await ctx.send("❌ Couldn't fetch the list from Renormalize. Try again in a bit.")
         return
 
@@ -318,14 +318,14 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
         if not candidates:
             await ctx.send(
                 f"❌ No match for «{person}» in Renormalize. Check the spelling — "
-                f"or use `/addmember`, it has live suggestions."
+                f"or use `/adddevelopertolist`, it has live suggestions."
             )
             return
         if len(candidates) > 1:
             lines = "\n".join(f"• {u['name']} — id `{u['id']}`" for u in candidates[:10])
             await ctx.send(
                 f"⚠️ Found several matches for «{person}»:\n{lines}\n\n"
-                f"Be more specific, or use `/addmember` with suggestions."
+                f"Be more specific, or use `/adddevelopertolist` with suggestions."
             )
             return
         match     = candidates[0]
@@ -345,7 +345,7 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
 async def _custom_member_autocomplete(
     interaction: discord.Interaction, current: str,
 ) -> list[app_commands.Choice[str]]:
-    """Only people actually in custom_members — the ones /removemember can act on
+    """Only people actually in custom_members — the ones /removedeveloperfromlist can act on
     (TEAM and CANDIDATE_ROSTER are baked into the code, not removable this way)."""
     cur = current.casefold()
     return [
@@ -355,12 +355,12 @@ async def _custom_member_autocomplete(
     ][:25]
 
 
-@bot.hybrid_command(name="removemember", description="Remove a manually-added person (Lead only)")
+@bot.hybrid_command(name="removedeveloperfromlist", description="Remove a manually-added person (Lead only)")
 @app_commands.describe(arg="Renormalize ID or name")
 @app_commands.rename(arg="who")
 @app_commands.autocomplete(arg=_custom_member_autocomplete)
-async def cmd_removemember(ctx: commands.Context, *, arg: str) -> None:
-    """!removemember <renormalize_id | name> — remove a custom member (Lead only)."""
+async def cmd_remove_developer_from_list(ctx: commands.Context, *, arg: str) -> None:
+    """!removedeveloperfromlist <renormalize_id | name> — remove a custom member (Lead only)."""
     if ctx.author.id != LEAD_USER_ID:
         await _deny(ctx)
         return

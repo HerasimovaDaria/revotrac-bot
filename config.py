@@ -78,7 +78,7 @@ RENAMED_TEAM_MEMBERS: dict[str, str] = {
     "Станислав Селиванов": "Stanislav Selivanov",
 }
 
-# Renormalize IDs that /addmember is allowed to *suggest* by name (engineering-adjacent
+# Renormalize IDs that /adddevelopertolist is allowed to *suggest* by name (engineering-adjacent
 # roles only — not sales, HR, or other departments; curated by the Lead). Adding someone by
 # a known Renormalize ID directly still works regardless of this list — this only limits
 # what shows up when searching/autocompleting by name, so the bot doesn't surface the

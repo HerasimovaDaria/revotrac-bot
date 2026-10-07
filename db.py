@@ -192,8 +192,9 @@ def _baked_in_ids() -> set[int]:
 
 def _deduped_custom_members() -> list[tuple[int, str, float, float]]:
     """get_custom_members(), minus anyone whose ID is already baked into TEAM/
-    CANDIDATE_ROSTER — a stale leftover from /addmember-ing someone before they were added
-    to CANDIDATE_ROSTER (same real person, now tracked twice under the same ID otherwise).
+    CANDIDATE_ROSTER — a stale leftover from /adddevelopertolist-ing someone before they
+    were added to CANDIDATE_ROSTER (same real person, now tracked twice under the same ID
+    otherwise).
     Report-only people (negative ID) are never baked in, so they're always kept.
     """
     baked = _baked_in_ids()

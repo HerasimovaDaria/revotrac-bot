@@ -16,7 +16,7 @@ APScheduler + SQLite.
 
 | Concept | What it is |
 |---|---|
-| **Tracked person** | Someone whose hours/reports can be followed. Comes from one of three places in `config.py`/the database: `TEAM` (a handful of hardcoded people with real hour targets), `CANDIDATE_ROSTER` (a curated list of ~57 engineers, default 8h/day target, already trackable with `/track` — no `/addmember` needed), or `custom_members` in the database (anyone added at runtime with `/addmember`, Renormalize ID + hours tracked, or `/addperson`, no Renormalize, report check only). |
+| **Tracked person** | Someone whose hours/reports can be followed. Comes from one of three places in `config.py`/the database: `TEAM` (a handful of hardcoded people with real hour targets), `CANDIDATE_ROSTER` (a curated list of ~57 engineers, default 8h/day target, already trackable with `/track` — no `/adddevelopertolist` needed), or `custom_members` in the database (anyone added at runtime with `/adddevelopertolist`, Renormalize ID + hours tracked, or `/addperson`, no Renormalize, report check only). |
 | **Subscriber** | A Discord user who receives a morning report. Adds people one at a time with `/track` (searchable), removes with `/untrack`, `/tracklist` shows the current list. Any number of subscribers, each with their own list. |
 | **Discord link** | "Tracked person → their Discord account" (`/linkdiscord`). Without it the bot can't tell which messages in a channel count as that person's report. |
 | **Reports channel** | Where daily reports get posted. Each subscriber can set their own (`/setchannel`); falls back to `REPORTS_CHANNEL_ID` if unset. Channels can be on different servers — the bot just needs to be a member of each one. |
@@ -72,7 +72,7 @@ Two layers:
 
 - **Lead (`LEAD_USER_ID`)** — one fixed Discord ID, set once in the environment. Always has
   access to everything, and is the only one who can run Lead-only commands:
-  - `/removemember` — remove a manually-added person
+  - `/removedeveloperfromlist` — remove a manually-added person
   - `/renormalizeusers` — list everyone in the Renormalize workspace with their ID
   - `/alloweduser` — manage who else can use the bot (see below)
 
@@ -92,18 +92,18 @@ Two layers:
   preference gets added automatically, so turning this on doesn't lock out the existing
   team. From then on it's manual.
 
-### Who `/addmember` can suggest
+### Who `/adddevelopertolist` can suggest
 
-`/addmember`'s name search (both the `/`-autocomplete and `!addmember`'s text matching) only
+`/adddevelopertolist`'s name search (both the `/`-autocomplete and `!adddevelopertolist`'s text matching) only
 searches a curated candidate pool — `ADDMEMBER_CANDIDATE_IDS` in `config.py` — not the whole
 Renormalize workspace. This keeps sales/HR/other departments' names and emails from being
 surfaced to everyone with bot access. If you already know someone's Renormalize ID, you can
-still add them directly (`/addmember <id>`) even if they're outside this pool — the
+still add them directly (`/adddevelopertolist <id>`) even if they're outside this pool — the
 restriction only applies to search-by-name. To change who's suggestable, edit the set in
 `config.py` and redeploy.
 
 Note this is a different list from `CANDIDATE_ROSTER` (the "Tracked person" row above):
-`ADDMEMBER_CANDIDATE_IDS` controls who `/addmember` can *find and add*; `CANDIDATE_ROSTER`
+`ADDMEMBER_CANDIDATE_IDS` controls who `/adddevelopertolist` can *find and add*; `CANDIDATE_ROSTER`
 is the people already added — baked into the roster, trackable with `/track` right away.
 
 ---
@@ -124,12 +124,12 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | `/weekly` | Hours progress for the current week |
 | `/monthly` | Who's behind this month — only people with a shortfall |
 | `/members` | Everyone tracked, plus their Discord links |
-| `/addmember <person>` | Add someone — start typing a name for live suggestions, or paste a Renormalize ID directly |
+| `/adddevelopertolist <person>` | Add someone — start typing a name for live suggestions, or paste a Renormalize ID directly |
 | `/addperson <name> <discord>` | Add someone without Renormalize — only their daily report is checked |
 | `/linkdiscord <person> <discord>` | Link a tracked person to a Discord account (autocompletes both fields) |
 | `/setchannel [channel_id]` | Set your reports channel — run it in the target channel, or pass an ID |
 | `/reminders on\|off` | Evening reminders for your subscription |
-| `/removemember <id or name>` | Remove a manually-added person (**Lead only**) |
+| `/removedeveloperfromlist <id or name>` | Remove a manually-added person (**Lead only**) |
 | `/renormalizeusers` | List everyone in Renormalize with their ID and status (**Lead only**) |
 | `/alloweduser add\|remove\|list [discord]` | Manage who can use the bot (**Lead only**) |
 
@@ -142,7 +142,7 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 2. Lead: `/track <name>` for each PM → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
 
 **A PM tracks their developers' hours and reports**
-1. `/track <name>` — most developers are already in `CANDIDATE_ROSTER`, so this alone adds them. If a name doesn't come up (check `/members`), use `/addmember` first, then `/track`.
+1. `/track <name>` — most developers are already in `CANDIDATE_ROSTER`, so this alone adds them. If a name doesn't come up (check `/members`), use `/adddevelopertolist` first, then `/track`.
 2. Link them to Discord: `/linkdiscord`.
 3. PM: `/setchannel` in the devs' channel → `/settime`.
 4. `/tracklist` any time, to see who's currently tracked.
@@ -205,7 +205,7 @@ duplicated replies and duplicated scheduled DMs to real people.
 |---|---|
 | `subscriptions` | subscriber → people in their report |
 | `preferences` | report time, own reports channel, reminders on/off |
-| `custom_members` | people added via `/addmember` / `/addperson` (the latter get a negative ID and a 0h target) |
+| `custom_members` | people added via `/adddevelopertolist` / `/addperson` (the latter get a negative ID and a 0h target) |
 | `discord_links` | tracked person → Discord ID |
 | `allowed_users` | Discord IDs allowed to use the bot (besides the Lead) — managed with `/alloweduser` |
 
@@ -217,7 +217,7 @@ aren't stored in the database — their names are also used as primary keys in s
 tables above, so renaming them in code would orphan every existing row referencing the old
 name. To change the core roster or someone's hour target, edit `config.py` and redeploy.
 
-If someone was added with `/addmember` *before* they existed in `CANDIDATE_ROSTER`, they'd
+If someone was added with `/adddevelopertolist` *before* they existed in `CANDIDATE_ROSTER`, they'd
 end up in both the hardcoded roster and `custom_members` — `_deduped_custom_members()` in
 `db.py` filters `custom_members` against everyone already baked into code, so they're only
 ever counted once in reports and `/members`.

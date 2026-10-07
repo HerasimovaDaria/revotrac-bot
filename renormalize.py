@@ -10,7 +10,7 @@ from utils import workdays_between
 
 # ---------------------------------------------------------------------------
 # Workspace user directory — GET /v1/users (NOT /members, which is 501 Not Implemented).
-# Cached briefly since it backs live Discord autocomplete (!addmember) and is paginated.
+# Cached briefly since it backs live Discord autocomplete (!adddevelopertolist) and is paginated.
 # ---------------------------------------------------------------------------
 
 _USERS_CACHE_TTL = 300   # seconds
