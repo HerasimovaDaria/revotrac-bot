@@ -1,6 +1,6 @@
 """Bot commands (hybrid !cmd / slash /cmd) and their autocomplete providers."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 import discord
@@ -10,7 +10,7 @@ from discord.ext import commands
 from client import bot
 from config import (
     ADDMEMBER_CANDIDATE_IDS,
-    PM_USER_ID,
+    LEAD_USER_ID,
     REMINDER_HOUR,
     REMINDER_MINUTE,
     RENORMALIZE_API_KEY,
@@ -70,9 +70,9 @@ async def _working(ctx: commands.Context) -> None:
 
 
 async def _deny(ctx: commands.Context) -> None:
-    """PM-only command called by someone else."""
+    """Lead-only command called by someone else."""
     if ctx.interaction:
-        await ctx.send("🚫 PM only.", ephemeral=True)
+        await ctx.send("🚫 Lead only.", ephemeral=True)
     else:
         await ctx.message.add_reaction("🚫")
 
@@ -129,7 +129,7 @@ async def cmd_start(ctx: commands.Context) -> None:
         "**Also useful:** `/report` (get it now) · `/weekly` (week progress) · "
         "`/monthly` (who's behind this month) · `/reminders on` (auto-nudge people who "
         "forgot) · `/members` (who's tracked)\n\n"
-        "-# No access? Ask the Head of PM for `/alloweduser add`."
+        "-# No access? Ask the Lead for `/alloweduser add`."
     )
     await _reply(ctx, text)
 
@@ -338,12 +338,26 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
     )
 
 
-@bot.hybrid_command(name="removemember", description="Remove a manually-added person (PM only)")
+async def _custom_member_autocomplete(
+    interaction: discord.Interaction, current: str,
+) -> list[app_commands.Choice[str]]:
+    """Only people actually in custom_members — the ones /removemember can act on
+    (TEAM and CANDIDATE_ROSTER are baked into the code, not removable this way)."""
+    cur = current.casefold()
+    return [
+        app_commands.Choice(name=f"{dname} (id {rid})"[:100], value=dname)
+        for rid, dname, _, _ in get_custom_members()
+        if cur in dname.casefold()
+    ][:25]
+
+
+@bot.hybrid_command(name="removemember", description="Remove a manually-added person (Lead only)")
 @app_commands.describe(arg="Renormalize ID or name")
 @app_commands.rename(arg="who")
+@app_commands.autocomplete(arg=_custom_member_autocomplete)
 async def cmd_removemember(ctx: commands.Context, *, arg: str) -> None:
-    """!removemember <renormalize_id | name> — remove a custom member (PM only)."""
-    if ctx.author.id != PM_USER_ID:
+    """!removemember <renormalize_id | name> — remove a custom member (Lead only)."""
+    if ctx.author.id != LEAD_USER_ID:
         await _deny(ctx)
         return
 
@@ -626,63 +640,10 @@ async def slash_addperson(interaction: discord.Interaction, name: str, user: str
     )
 
 
-@bot.command(name="testapi")
-async def cmd_test_api(ctx: commands.Context) -> None:
-    """!testapi — test Renormalize API with Samvel's ID, show raw response (PM only)."""
-    if ctx.author.id != PM_USER_ID:
-        await ctx.message.add_reaction("🚫")
-        return
-
-    await ctx.message.add_reaction("⏳")
-    import httpx
-
-    today    = datetime.now(UTC3).date()
-    test_id  = 76632  # Samvel
-    date_str = (today - timedelta(days=1)).isoformat()
-
-    results: list[str] = []
-    async with httpx.AsyncClient() as client:
-        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
-        base    = "https://api.renormalize.com/v1/time/progression"
-
-        # Test Alexey Dumailenko (76542) — UI shows 9h38m on Jun 2, bot shows 6.8h
-        alexey_id = 76542
-
-        # Approach A: wide range Jun 1→Jun 3, filter by time_start date
-        try:
-            resp = await client.get(
-                base,
-                params={"user_ids": str(alexey_id), "start_at": "2026-06-01", "end_at": "2026-06-03"},
-                headers=headers, timeout=10,
-            )
-            all_entries = resp.json().get(str(alexey_id), [])
-            by_date: dict[str, int] = {}
-            by_ts_date: dict[str, int] = {}
-            for e in all_entries:
-                d = e.get("date", "?")
-                ts_d = str(e.get("time_start", ""))[:10]
-                by_date[d] = by_date.get(d, 0) + e.get("total_time", 0)
-                by_ts_date[ts_d] = by_ts_date.get(ts_d, 0) + e.get("total_time", 0)
-            results.append(
-                f"**Alexey (76542) Jun1→Jun3**\n"
-                f"Entries: {len(all_entries)}\n"
-                f"By `date` field: {by_date}\n"
-                f"By `time_start` date: {by_ts_date}\n"
-                f"→ Jun2 by date: {by_date.get('2026-06-02',0)/3600:.2f}h\n"
-                f"→ Jun2 by time_start: {by_ts_date.get('2026-06-02',0)/3600:.2f}h"
-            )
-        except Exception as exc:
-            results.append(f"**Alexey test** Error: {exc}")
-
-    user = await bot.fetch_user(PM_USER_ID)
-    await user.send("🔬 **API test (Samvel, yesterday):**\n\n" + "\n\n".join(results))
-    await ctx.message.add_reaction("✅")
-
-
-@bot.hybrid_command(name="findmembers", description="List everyone in Renormalize with their ID (PM only)")
+@bot.hybrid_command(name="findmembers", description="List everyone in Renormalize with their ID (Lead only)")
 async def cmd_find_members(ctx: commands.Context) -> None:
-    """!findmembers — list all Renormalize workspace members with their IDs (PM only)."""
-    if ctx.author.id != PM_USER_ID:
+    """!findmembers — list all Renormalize workspace members with their IDs (Lead only)."""
+    if ctx.author.id != LEAD_USER_ID:
         await _deny(ctx)
         return
     if not RENORMALIZE_API_KEY:
@@ -695,7 +656,7 @@ async def cmd_find_members(ctx: commands.Context) -> None:
         members = await fetch_all_renormalize_users(force=True)
     except Exception as exc:
         log.exception("findmembers API error: %s", exc)
-        user = await bot.fetch_user(PM_USER_ID)
+        user = await bot.fetch_user(LEAD_USER_ID)
         await user.send(f"❌ Renormalize request failed:\n```{exc}```")
         await _reply(ctx, "❌ Renormalize request failed, details sent to your DMs.")
         return
@@ -716,7 +677,7 @@ async def cmd_find_members(ctx: commands.Context) -> None:
         lines.append(f"`{uid}` — **{name}** ({status})")
 
     text = "\n".join(lines)
-    user = await bot.fetch_user(PM_USER_ID)
+    user = await bot.fetch_user(LEAD_USER_ID)
     # Split if over Discord's 2000-char limit
     for chunk in [text[i:i+1900] for i in range(0, len(text), 1900)]:
         await user.send(chunk)
@@ -724,7 +685,7 @@ async def cmd_find_members(ctx: commands.Context) -> None:
 
 
 @bot.hybrid_command(name="alloweduser",
-                    description="Who can use the bot — add / remove / list (PM only)")
+                    description="Who can use the bot — add / remove / list (Lead only)")
 @app_commands.describe(action="add — grant access, remove — revoke access, list — show the list",
                        user="Start typing a nickname — or paste a Discord ID (not needed for list)")
 @app_commands.rename(action="action", user="discord")
@@ -735,8 +696,8 @@ async def cmd_find_members(ctx: commands.Context) -> None:
 ])
 @app_commands.autocomplete(user=_discord_user_autocomplete)
 async def cmd_alloweduser(ctx: commands.Context, action: str, user: Optional[str] = None) -> None:
-    """!alloweduser <add|remove|list> [discord] — manage who can use the bot (PM only)."""
-    if ctx.author.id != PM_USER_ID:
+    """!alloweduser <add|remove|list> [discord] — manage who can use the bot (Lead only)."""
+    if ctx.author.id != LEAD_USER_ID:
         await _deny(ctx)
         return
 
@@ -744,7 +705,7 @@ async def cmd_alloweduser(ctx: commands.Context, action: str, user: Optional[str
 
     if action == "list":
         ids = get_allowed_users()
-        header = "✅ **Access: you (PM) and:**\n" if ids else "Only you (PM) have access — the list is empty."
+        header = "✅ **Access: you (Lead) and:**\n" if ids else "Only you (Lead) have access — the list is empty."
         lines  = "\n".join(f"• <@{uid}> (`{uid}`)" for uid in ids)
         await _reply(ctx, header + lines, allowed_mentions=discord.AllowedMentions.none())
         return
@@ -767,8 +728,8 @@ async def cmd_alloweduser(ctx: commands.Context, action: str, user: Optional[str
         await _reply(ctx, f"✅ {target.mention} can now use the bot.",
                      allowed_mentions=discord.AllowedMentions.none())
     else:
-        if target.id == PM_USER_ID:
-            await _reply(ctx, "⚠️ Can't remove yourself (PM) — you always have access.")
+        if target.id == LEAD_USER_ID:
+            await _reply(ctx, "⚠️ Can't remove yourself (Lead) — you always have access.")
             return
         removed = remove_allowed_user(target.id)
         msg = (f"✅ {target.mention} can no longer use the bot." if removed

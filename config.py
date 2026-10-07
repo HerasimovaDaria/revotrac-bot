@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN             = os.getenv("DISCORD_BOT_TOKEN", "")
-PM_USER_ID        = int(os.getenv("PM_USER_ID", "0"))
+LEAD_USER_ID      = int(os.getenv("LEAD_USER_ID") or os.getenv("PM_USER_ID") or "0")
 # Support both variable names (RENORMALIZE_TOKEN is the real JWT, RENORMALIZE_API_KEY is legacy)
 RENORMALIZE_API_KEY = os.getenv("RENORMALIZE_TOKEN") or os.getenv("RENORMALIZE_API_KEY", "")
 # Default channel with daily reports (text or forum) for subscribers without !setchannel.
@@ -77,7 +77,7 @@ RENAMED_TEAM_MEMBERS: dict[str, str] = {
 }
 
 # Renormalize IDs that /addmember is allowed to *suggest* by name (engineering-adjacent
-# roles only — not sales, HR, or other departments; curated by the PM). Adding someone by
+# roles only — not sales, HR, or other departments; curated by the Lead). Adding someone by
 # a known Renormalize ID directly still works regardless of this list — this only limits
 # what shows up when searching/autocompleting by name, so the bot doesn't surface the
 # whole company directory. Edit this set (and redeploy) to change who's suggestable.

@@ -9,11 +9,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from discord import app_commands
 from discord.ext import commands
 
-from config import PM_USER_ID, UTC3
+from config import LEAD_USER_ID, UTC3
 from db import is_allowed_user
 
 # ---------------------------------------------------------------------------
-# Access control — only PM_USER_ID and people in the allowed_users DB table
+# Access control — only LEAD_USER_ID and people in the allowed_users DB table
 # (managed with !alloweduser) can use any command, ! or /.
 # ---------------------------------------------------------------------------
 
@@ -21,7 +21,7 @@ _DENY_MSG = "🚫 You don't have access to this bot."
 
 
 def _is_authorized(user_id: int) -> bool:
-    return user_id == PM_USER_ID or is_allowed_user(user_id)
+    return user_id == LEAD_USER_ID or is_allowed_user(user_id)
 
 
 class _GatedCommandTree(app_commands.CommandTree):

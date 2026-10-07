@@ -60,22 +60,22 @@ day are skipped. Someone in several subscriptions still gets just one message.
 
 Two layers:
 
-- **PM (`PM_USER_ID`)** — one fixed Discord ID, set once in the environment. Always has
-  access to everything, and is the only one who can run PM-only commands:
+- **Lead (`LEAD_USER_ID`)** — one fixed Discord ID, set once in the environment. Always has
+  access to everything, and is the only one who can run Lead-only commands:
   - `/removemember` — remove a manually-added person
   - `/findmembers` — list everyone in the Renormalize workspace with their ID
   - `/alloweduser` — manage who else can use the bot (see below)
 
-  Without `PM_USER_ID` set, the bot refuses to start.
+  Without `LEAD_USER_ID` set, the bot refuses to start.
 
-- **Allowed users** — everyone else needs explicit access, managed entirely at runtime
-  (no redeploy needed):
+- **Allowed users** — everyone else (the PMs who actually use the bot day to day) needs
+  explicit access, managed entirely at runtime (no redeploy needed):
   ```
   /alloweduser add      — grant access (pick a Discord nickname or paste an ID)
   /alloweduser remove   — revoke access
   /alloweduser list     — show who currently has access
   ```
-  Anyone not on this list (and not the PM) gets an explicit "🚫 You don't have access to
+  Anyone not on this list (and not the Lead) gets an explicit "🚫 You don't have access to
   this bot" instead of being silently ignored.
 
   The first time this feature runs, everyone who already had a subscription or a saved
@@ -102,7 +102,9 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | Command | What it does |
 |---|---|
 | `/start` | Quick guide |
-| `/subscribe` | Choose who appears in your report |
+| `/subscribe` | Choose who appears in your report (checkbox list — chunked past 25 people) |
+| `/track <person>` | Add one person to your subscription — searchable (`!track` also takes a comma-separated list for bulk adds) |
+| `/untrack <person>` | Remove one person from your subscription — searchable (same bulk-list support via `!untrack`) |
 | `/settime 09:00` | Your morning report time (UTC+3); no argument shows the current one |
 | `/report` | Get a report for the last workday right now |
 | `/weekly` | Hours progress for the current week |
@@ -113,28 +115,25 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | `/linkdiscord <person> <discord>` | Link a tracked person to a Discord account (autocompletes both fields) |
 | `/setchannel [channel_id]` | Set your reports channel — run it in the target channel, or pass an ID |
 | `/reminders on\|off` | Evening reminders for your subscription |
-| `/removemember <id or name>` | Remove a manually-added person (**PM only**) |
-| `/findmembers` | List everyone in Renormalize with their ID and status (**PM only**) |
-| `/alloweduser add\|remove\|list [discord]` | Manage who can use the bot (**PM only**) |
-
-(`!testapi` also exists — a one-off debugging command with hardcoded test IDs/dates,
-`!`-only and PM-only. Not meant for regular use.)
+| `/removemember <id or name>` | Remove a manually-added person (**Lead only**) |
+| `/findmembers` | List everyone in Renormalize with their ID and status (**Lead only**) |
+| `/alloweduser add\|remove\|list [discord]` | Manage who can use the bot (**Lead only**) |
 
 ---
 
 ## Typical scenarios
 
-**A director wants to know which PMs haven't posted their own report**
+**The Lead wants to know which PMs haven't posted their own report**
 1. Add the PMs: `/addperson <name> <discord>`.
-2. Director: `/subscribe` (pick the PMs) → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
+2. Lead: `/subscribe` (pick the PMs) → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
 
 **A PM tracks their developers' hours and reports**
-1. If a developer isn't in `/members` yet, add them: `/addmember` (type their name, pick the suggestion).
+1. If a developer isn't already tracked (check `/members`), use `/track <name>` — or `/addmember` if they're not in the roster at all yet.
 2. Link them to Discord: `/linkdiscord`.
-3. PM: `/subscribe` → `/setchannel` in the devs' channel → `/settime`.
+3. PM: `/setchannel` in the devs' channel → `/settime`.
 
-**Granting bot access to a new PM/director**
-1. PM: `/alloweduser add`, pick the person from the nickname suggestions (or paste their Discord ID).
+**Granting a new PM access to the bot**
+1. Lead: `/alloweduser add`, pick the person from the nickname suggestions (or paste their Discord ID).
 2. They need to share at least one Discord server with the bot — Discord doesn't allow DMs between users/bots without one. If they're not already on a shared server, either add them to the team's server, or set up a small private server with just them and the bot invited to it.
 
 ---
@@ -152,7 +151,7 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | Variable | Required | Description |
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | yes | Bot token |
-| `PM_USER_ID` | yes | The admin's Discord ID (see **Access control** above) |
+| `LEAD_USER_ID` | yes | The Lead's Discord ID (see **Access control** above) |
 | `RENORMALIZE_TOKEN` | recommended | Renormalize API JWT. Without it, hours are randomized (mock mode) |
 | `REPORTS_CHANNEL_ID` | no | Default reports channel for subscribers who haven't run `/setchannel` |
 | `DB_PATH` | no | SQLite file path, defaults to `hours.db` |
@@ -192,7 +191,7 @@ duplicated replies and duplicated scheduled DMs to real people.
 | `preferences` | report time, own reports channel, reminders on/off |
 | `custom_members` | people added via `/addmember` / `/addperson` (the latter get a negative ID and a 0h target) |
 | `discord_links` | tracked person → Discord ID |
-| `allowed_users` | Discord IDs allowed to use the bot (besides the PM) — managed with `/alloweduser` |
+| `allowed_users` | Discord IDs allowed to use the bot (besides the Lead) — managed with `/alloweduser` |
 
 Day offs aren't stored here at all — they're read live from Renormalize on every report
 (see **Day off** above).
