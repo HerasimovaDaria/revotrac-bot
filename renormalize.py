@@ -193,8 +193,11 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
 
 async def fetch_month_hours(target_date: date) -> dict[str, float]:
     """
-    Return total hours worked per team member from the 1st of *target_date*'s month
-    through *target_date* (inclusive). 1 API call per member.
+    Return *effective* hours worked per team member from the 1st of *target_date*'s month
+    through *target_date* (inclusive): actual logged hours, plus the full daily target
+    credited for any workday covered by a vacation/sick-leave/absence record — Renormalize
+    treats approved leave as fully worked, not a shortfall, so this matches that. 1 API call
+    per member for hours, plus 1 (cached) for their leave record.
     """
     month_start = target_date.replace(day=1)
     all_m       = _all_members()
@@ -212,7 +215,7 @@ async def fetch_month_hours(target_date: date) -> dict[str, float]:
     import httpx
     async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
-        for name, _en, _, _ in all_m:
+        for name, _en, daily, _ in all_m:
             renorm_id = all_ids.get(name)
             if renorm_id is None:
                 continue
@@ -230,7 +233,14 @@ async def fetch_month_hours(target_date: date) -> dict[str, float]:
                 resp.raise_for_status()
                 entries = resp.json().get(str(renorm_id), [])
                 total_sec = sum(e.get("total_time", 0) for e in entries)
-                totals[name] = round(total_sec / 3600, 2)
+                worked    = total_sec / 3600
+
+                leave_credit = 0.0
+                if daily and renorm_id > 0:
+                    leave_days   = await _leave_workdays_in_range(renorm_id, month_start, target_date)
+                    leave_credit = daily * leave_days
+
+                totals[name] = round(worked + leave_credit, 2)
             except Exception as exc:
                 log.exception("fetch_month_hours failed for %s: %s", name, exc)
 
@@ -287,6 +297,20 @@ async def fetch_leave_records(renorm_id: int, force: bool = False) -> list[tuple
 
     _leave_cache[renorm_id] = {"data": records, "ts": now}
     return records
+
+
+async def _leave_workdays_in_range(renorm_id: int, start: date, end: date) -> int:
+    """Count distinct Mon–Fri days in [start, end] covered by any leave record (any type)."""
+    records = await fetch_leave_records(renorm_id)
+    covered: set[date] = set()
+    for rec_start, rec_end in records:
+        lo, hi = max(rec_start, start), min(rec_end, end)
+        d = lo
+        while d <= hi:
+            if d.weekday() < 5:
+                covered.add(d)
+            d += timedelta(days=1)
+    return len(covered)
 
 
 async def fetch_day_offs(target_date: date) -> set[str]:
