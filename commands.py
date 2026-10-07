@@ -562,17 +562,17 @@ async def cmd_test_api(ctx: commands.Context) -> None:
     await ctx.message.add_reaction("✅")
 
 
-@bot.command(name="findmembers")
+@bot.hybrid_command(name="findmembers", description="Список всех сотрудников в Renormalize с их ID (только PM)")
 async def cmd_find_members(ctx: commands.Context) -> None:
     """!findmembers — list all Renormalize workspace members with their IDs (PM only)."""
     if ctx.author.id != PM_USER_ID:
-        await ctx.message.add_reaction("🚫")
+        await _deny(ctx)
         return
     if not RENORMALIZE_API_KEY:
-        await ctx.send("❌ RENORMALIZE_API_KEY не задан в .env")
+        await _reply(ctx, "❌ RENORMALIZE_API_KEY не задан в .env")
         return
 
-    await ctx.message.add_reaction("⏳")
+    await _working(ctx)
 
     import httpx
 
@@ -595,7 +595,7 @@ async def cmd_find_members(ctx: commands.Context) -> None:
         log.exception("findmembers API error: %s", exc)
         user = await bot.fetch_user(PM_USER_ID)
         await user.send(f"❌ Ошибка запроса к Renormalize:\n```{exc}```")
-        await ctx.message.add_reaction("🔴")
+        await _reply(ctx, "❌ Ошибка запроса к Renormalize, подробности — в личке.")
         return
 
     # Handle various response shapes
@@ -610,7 +610,7 @@ async def cmd_find_members(ctx: commands.Context) -> None:
             "⚠️ Пустой список или неизвестная структура ответа.\n"
             f"Сырой ответ (первые 500 символов):\n```{str(data)[:500]}```"
         )
-        await ctx.message.add_reaction("⚠️")
+        await _reply(ctx, "⚠️ Пустой список или неизвестная структура ответа, подробности — в личке.")
         return
 
     lines = ["👥 **Сотрудники в Renormalize (ID — Имя):**\n"]
@@ -629,5 +629,6 @@ async def cmd_find_members(ctx: commands.Context) -> None:
     # Split if over Discord's 2000-char limit
     for chunk in [text[i:i+1900] for i in range(0, len(text), 1900)]:
         await user.send(chunk)
+    await _reply(ctx, f"✅ Список отправлен тебе в личку ({len(members)} чел.).")
 
     await ctx.message.add_reaction("✅")
