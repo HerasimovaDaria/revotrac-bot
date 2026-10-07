@@ -119,17 +119,15 @@ async def cmd_start(ctx: commands.Context) -> None:
         "daily reports.\n\n"
         "**Do this to get it working:**\n"
         "```\n"
-        "!addmember <name>   — add your people (or /addmember for autocomplete)\n"
-        "!subscribe          — pick who you want reports on\n"
-        "!setchannel         — run this in your team's daily-report channel\n"
-        "!settime 09:00      — when you want your report (UTC+3)\n"
+        "/subscribe          — pick who you want reports on\n"
+        "/setchannel         — run this in your team's daily-report channel\n"
+        "/settime 09:00      — when you want your report (UTC+3)\n"
         "```\n"
         "That's it — tomorrow morning you'll get a DM with only the people who need "
         "attention. Vacations and sick leave are detected automatically.\n\n"
-        "**Also useful:** `!report` (get it now) · `!weekly` (week progress) · "
-        "`!reminders on` (auto-nudge people who forgot) · `!members` (who's tracked)\n\n"
-        "-# Also works as `/command` with autocomplete. No access? Ask the Head of PM "
-        "for `/alloweduser add`."
+        "**Also useful:** `/report` (get it now) · `/weekly` (week progress) · "
+        "`/reminders on` (auto-nudge people who forgot) · `/members` (who's tracked)\n\n"
+        "-# No access? Ask the Head of PM for `/alloweduser add`."
     )
     await _reply(ctx, text)
 
