@@ -27,7 +27,7 @@ Commands (also available as slash commands with autocomplete: /track, /report, �
   !monthly                — show who's behind this month (shortfall only)
   !members                — list all people available for tracking (with Discord links)
   !linkdiscord <name> <@user|nick|id> — link a member to Discord (for daily-report checks)
-  !adddevelopertolist <name|id> — add a person found live in Renormalize (visible to everyone)
+  !adddevelopertolist <name|id> — add a person found live in Renormalize (Lead only)
   !addperson <name> <@user|nick|id> — add a person without Renormalize (daily-report check only)
   !removedeveloperfromlist <id|name> — remove a custom member (Lead only)
   !setchannel [id]        — use this channel (or channel id) as YOUR daily-reports channel

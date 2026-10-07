@@ -281,12 +281,20 @@ async def _renormalize_user_autocomplete(
     ]
 
 
-@bot.hybrid_command(name="adddevelopertolist", description="Add a person — start typing a name, Renormalize suggests it")
+@bot.hybrid_command(name="adddevelopertolist", description="Add a person — start typing a name, Renormalize suggests it (Lead only)")
 @app_commands.describe(person="Start typing a name — pick a suggestion (or paste a Renormalize ID)")
 @app_commands.rename(person="person")
 @app_commands.autocomplete(person=_renormalize_user_autocomplete)
 async def cmd_add_developer_to_list(ctx: commands.Context, *, person: str) -> None:
-    """!adddevelopertolist <name or Renormalize ID> — add a person found live in Renormalize."""
+    """!adddevelopertolist <name or Renormalize ID> — add a person found live in Renormalize (Lead only)."""
+    if ctx.author.id != LEAD_USER_ID:
+        msg = f"🚫 Please contact <@{LEAD_USER_ID}> to add a developer."
+        if ctx.interaction:
+            await ctx.send(msg, ephemeral=ctx.guild is not None)
+        else:
+            await ctx.send(msg)
+        return
+
     person = person.strip()
     if not person:
         await ctx.send("❌ Give a name or Renormalize ID. Example: `!adddevelopertolist Ivan Petrov`.")
