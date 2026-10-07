@@ -4,7 +4,7 @@ import random
 import time
 from datetime import date, datetime, timedelta
 
-from config import RENORMALIZE_API_KEY, UTC3, log
+from config import RENORMALIZE_API_KEY, UTC2, log
 from db import _all_members, _all_renormalize_ids
 from utils import workdays_between
 
@@ -152,7 +152,7 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
     Return total hours worked per team member for the week starting *week_begin*.
     Makes 1 API call per member (not 7) for efficiency.
     """
-    today      = datetime.now(UTC3).date()
+    today      = datetime.now(UTC2).date()
     end        = min(week_begin + timedelta(days=6), today)
     all_m      = _all_members()
     all_ids    = _all_renormalize_ids()

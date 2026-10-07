@@ -16,10 +16,12 @@ RENORMALIZE_API_KEY = os.getenv("RENORMALIZE_TOKEN") or os.getenv("RENORMALIZE_A
 # Default channel with daily reports (text or forum) for subscribers without !setchannel.
 # 0 → no default (report check only for those who ran !setchannel).
 REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID") or 0)
-# Evening "you haven't posted your daily report" DM, HH:MM UTC+3
+# Evening "you haven't posted your daily report" DM, HH:MM UTC+2
 REMINDER_HOUR, REMINDER_MINUTE = (int(x) for x in (os.getenv("REMINDER_TIME") or "19:00").split(":"))
+# "Hasn't started work yet" alert, HH:MM UTC+2 — checks for 0 hours logged and no day off
+MIDDAY_HOUR, MIDDAY_MINUTE     = (int(x) for x in (os.getenv("MIDDAY_CHECK_TIME") or "13:00").split(":"))
 
-UTC3    = timezone(timedelta(hours=3))   # fixed offset — every user-facing time is "UTC+3"
+UTC2    = timezone(timedelta(hours=2))   # fixed offset — every user-facing time is "UTC+2"
 DB_PATH = os.getenv("DB_PATH") or "hours.db"   # on Railway point it to the Volume, e.g. /data/hours.db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

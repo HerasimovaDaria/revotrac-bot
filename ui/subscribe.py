@@ -90,7 +90,7 @@ class SubscribeView(discord.ui.View):
             msg = (
                 f"✅ **Subscription saved!**\n\n"
                 f"You'll get reports for:\n{bullet_list}\n\n"
-                f"⏰ Report time: **{h:02d}:{m:02d} UTC+3**.\n"
+                f"⏰ Report time: **{h:02d}:{m:02d} UTC+2**.\n"
                 f"Change the time: `!settime HH:MM`  (e.g. `!settime 08:30`)"
             )
         else:

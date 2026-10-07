@@ -237,7 +237,7 @@ def get_discord_links() -> dict[str, int]:
 # --- preference helpers (report time per user) ------------------------------
 
 def save_preference(user_id: int, hour: int, minute: int) -> None:
-    """Save or update the user's daily report time (stored as UTC+3)."""
+    """Save or update the user's daily report time (stored as UTC+2)."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -317,7 +317,7 @@ def get_preference(user_id: int) -> tuple[int, int]:
 
 
 def get_users_for_time(hour: int, minute: int) -> list[int]:
-    """Return Discord user IDs of subscribers whose report fires at hour:minute (UTC+3).
+    """Return Discord user IDs of subscribers whose report fires at hour:minute (UTC+2).
 
     Users who never ran !settime default to 9:00 and are included when hour=9, minute=0.
     """

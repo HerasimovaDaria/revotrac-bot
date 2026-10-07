@@ -15,7 +15,7 @@ from config import (
     REMINDER_MINUTE,
     RENORMALIZE_API_KEY,
     TEAM,
-    UTC3,
+    UTC2,
     log,
 )
 from db import (
@@ -103,7 +103,7 @@ async def cmd_report(ctx: commands.Context) -> None:
 
     await _working(ctx)
 
-    today     = datetime.now(UTC3).date()
+    today     = datetime.now(UTC2).date()
     yesterday = previous_workday(today)
 
     hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(bot, yesterday)
@@ -122,7 +122,7 @@ async def cmd_start(ctx: commands.Context) -> None:
         "**Do this to get it working:**\n"
         "```\n"
         "/subscribe          — pick who you want reports on\n"
-        "/settime 09:00      — when you want your report (UTC+3)\n"
+        "/settime 09:00      — when you want your report (UTC+2)\n"
         "```\n"
         "That's it — tomorrow morning you'll get a DM with only the people who need "
         "attention. Vacations and sick leave are detected automatically.\n\n"
@@ -150,7 +150,7 @@ async def cmd_weekly(ctx: commands.Context) -> None:
 
     await _working(ctx)
 
-    today      = datetime.now(UTC3).date()
+    today      = datetime.now(UTC2).date()
     wb         = week_start(today)
     week_hours = await fetch_week_hours(wb)
     text       = format_weekly_report(wb, week_hours, members) or "None of your people have a weekly hour target."
@@ -174,7 +174,7 @@ async def cmd_monthly(ctx: commands.Context) -> None:
 
     await _working(ctx)
 
-    today = datetime.now(UTC3).date()
+    today = datetime.now(UTC2).date()
     try:
         month_hours = await fetch_month_hours(today)
     except Exception as exc:
@@ -465,7 +465,7 @@ async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[str] = None
                             app_commands.Choice(name="off", value="off")])
 async def cmd_reminders(ctx: commands.Context, mode: Optional[str] = None) -> None:
     """!reminders [on|off] — evening DM to people in your subscription who haven't posted a report."""
-    when = f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} UTC+3"
+    when = f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} UTC+2"
     if mode is None:
         state = "on" if get_reminders(ctx.author.id) else "off"
         await ctx.send(
@@ -493,15 +493,15 @@ async def cmd_reminders(ctx: commands.Context, mode: Optional[str] = None) -> No
         await ctx.send("🔕 Reminders disabled.", ephemeral=True)
 
 
-@bot.hybrid_command(name="settime", description="Your daily report time (UTC+3), e.g. 09:00")
+@bot.hybrid_command(name="settime", description="Your daily report time (UTC+2), e.g. 09:00")
 @app_commands.describe(time_str="HH:MM; leave empty to show the current time")
 @app_commands.rename(time_str="time")
 async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> None:
-    """!settime [HH:MM] — set your daily report time (UTC+3). No arg = show current."""
+    """!settime [HH:MM] — set your daily report time (UTC+2). No arg = show current."""
     if time_str is None:
         h, m = get_preference(ctx.author.id)
         await ctx.send(
-            f"🕐 Your current report time: **{h:02d}:{m:02d} UTC+3**.\n"
+            f"🕐 Your current report time: **{h:02d}:{m:02d} UTC+2**.\n"
             f"Change it: `!settime 08:30`"
         )
         return
@@ -518,7 +518,7 @@ async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> 
 
     save_preference(ctx.author.id, hour, minute)
     await ctx.send(
-        f"✅ Daily report time set: **{hour:02d}:{minute:02d} UTC+3**.\n"
+        f"✅ Daily report time set: **{hour:02d}:{minute:02d} UTC+2**.\n"
         f"Haven't picked people yet? Use `!subscribe`."
     )
 

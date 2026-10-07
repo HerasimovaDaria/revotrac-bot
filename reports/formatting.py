@@ -11,6 +11,7 @@ def status_emoji(worked: float, target: float, day_off: bool) -> str:
     if day_off:
         return "✅"
     diff = worked - target
+    if diff > 1:       return "🔵"   # meaningfully over target — surfaced too, not just shortfalls
     if diff >= 0:      return "✅"
     if diff >= -1:     return "🟡"
     return "🔴"
@@ -31,12 +32,12 @@ def _day_title(d: date) -> str:
     return f"{WEEKDAYS[d.weekday()]}, {MONTHS[d.month - 1]} {d.day}"
 
 
-def _month_shortfall(daily: float, done: float, report_date: date) -> float:
-    """Hours still owed from the 1st of report_date's month through report_date,
-    at *daily* hours/workday. 0 if caught up or ahead."""
+def _month_delta(daily: float, done: float, report_date: date) -> float:
+    """done - target from the 1st of report_date's month through report_date, at *daily*
+    hours/workday. Positive = ahead of target, negative = behind."""
     workdays = workdays_between(report_date.replace(day=1), report_date)
     target   = daily * workdays
-    return max(target - done, 0.0)
+    return done - target
 
 
 def format_daily_report(
@@ -47,7 +48,9 @@ def format_daily_report(
     report_authors: Optional[set[int]] = None,    # None → report check disabled
     month_hours:    Optional[dict[str, float]] = None,   # None → skip the month-to-date figure
 ) -> str:
-    """Show only members with an hours shortfall or a missing daily report."""
+    """Show members with an hours shortfall, a meaningful surplus (overtime), or a
+    missing daily report — everyone exactly on target with a report is folded into the
+    "no issues" summary line."""
     header = f"### {_day_title(report_date)}\n"
 
     active = [(n, d, w) for n, _en, d, w in _all_members()
@@ -72,11 +75,18 @@ def format_daily_report(
             continue
         if emoji == "✅" and not no_report:
             continue
-        marker = "🟡" if emoji == "✅" else emoji
+        marker = "🟡" if emoji == "✅" else emoji   # ✅-but-no-report still needs a flag
         line   = f"{marker} **{name}** · {_h(worked)} of {daily:g}h today"
+        if emoji == "🔵":
+            line += " · over target today"
         if month_hours is not None:
-            short = _month_shortfall(daily, month_hours.get(name, 0.0), report_date)
-            line += f" · {_h(short)}h behind this month" if short > 0 else " · on track this month"
+            delta = _month_delta(daily, month_hours.get(name, 0.0), report_date)
+            if delta < -0.05:
+                line += f" · {_h(-delta)}h behind this month"
+            elif delta > 1:
+                line += f" · {_h(delta)}h ahead this month"
+            else:
+                line += " · on track this month"
         if no_report:
             line += " · no report"
         lines.append(line)
@@ -136,13 +146,13 @@ def format_monthly_report(
     for name, daily, _ in active:
         if not daily:                     # report-only person
             continue
-        done   = month_hours.get(name, 0.0)
-        target = daily * workdays
-        short  = max(target - done, 0.0)
-        if short <= 0:
+        done  = month_hours.get(name, 0.0)
+        delta = _month_delta(daily, done, report_date)
+        if delta >= 0:
             continue
-        pct = int(min(done / target, 1.0) * 100) if target else 0
-        lines.append(f"🔴 **{name}** · {_h(done)} of {_h(target)}h · {pct}%\n-# {_h(short)}h behind")
+        target = daily * workdays
+        pct    = int(min(done / target, 1.0) * 100) if target else 0
+        lines.append(f"🔴 **{name}** · {_h(done)} of {_h(target)}h · {pct}%\n-# {_h(-delta)}h behind")
 
     if not lines:
         return "✅ Everyone's on track this month."

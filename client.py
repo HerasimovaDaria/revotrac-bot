@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from discord import app_commands
 from discord.ext import commands
 
-from config import LEAD_USER_ID, UTC3
+from config import LEAD_USER_ID, UTC2
 from db import is_allowed_user
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 bot       = commands.Bot(command_prefix="!", intents=intents, tree_cls=_GatedCommandTree)
-scheduler = AsyncIOScheduler(timezone=UTC3)
+scheduler = AsyncIOScheduler(timezone=UTC2)
 
 
 @bot.check
