@@ -16,8 +16,8 @@ APScheduler + SQLite.
 
 | Concept | What it is |
 |---|---|
-| **Tracked person** | Someone whose hours/reports can be followed. Either hardcoded in `TEAM` (`config.py`), or added at runtime with `/addmember` (Renormalize ID, hours tracked) or `/addperson` (no Renormalize, report check only). |
-| **Subscriber** | A Discord user who receives a morning report. Picks who to follow with `/subscribe`. Any number of subscribers, each with their own list. |
+| **Tracked person** | Someone whose hours/reports can be followed. Comes from one of three places in `config.py`/the database: `TEAM` (a handful of hardcoded people with real hour targets), `CANDIDATE_ROSTER` (a curated list of ~57 engineers, default 8h/day target, already trackable with `/track` — no `/addmember` needed), or `custom_members` in the database (anyone added at runtime with `/addmember`, Renormalize ID + hours tracked, or `/addperson`, no Renormalize, report check only). |
+| **Subscriber** | A Discord user who receives a morning report. Adds people one at a time with `/track` (searchable — the easiest way day to day), or browses/bulk-picks everyone with `/subscribe`. `/tracklist` shows the current list, `/untrack` removes one person. Any number of subscribers, each with their own list. |
 | **Discord link** | "Tracked person → their Discord account" (`/linkdiscord`). Without it the bot can't tell which messages in a channel count as that person's report. |
 | **Reports channel** | Where daily reports get posted. Each subscriber can set their own (`/setchannel`); falls back to `REPORTS_CHANNEL_ID` if unset. Channels can be on different servers — the bot just needs to be a member of each one. |
 | **Day off** | Vacation, sick leave or other absence — read live from Renormalize (`/v1/vacations`), not entered manually. Skipped for both the hours and the report check. Only works for tracked people with a Renormalize ID; report-only people (`/addperson`) can't be checked this way. |
@@ -101,6 +101,10 @@ still add them directly (`/addmember <id>`) even if they're outside this pool �
 restriction only applies to search-by-name. To change who's suggestable, edit the set in
 `config.py` and redeploy.
 
+Note this is a different list from `CANDIDATE_ROSTER` (the "Tracked person" row above):
+`ADDMEMBER_CANDIDATE_IDS` controls who `/addmember` can *find and add*; `CANDIDATE_ROSTER`
+is the people already added — baked into the roster, trackable with `/track` right away.
+
 ---
 
 ## Commands
@@ -110,11 +114,11 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 
 | Command | What it does |
 |---|---|
-| `/start` | Quick guide |
-| `/subscribe` | Choose who appears in your report (checkbox list — chunked past 25 people) |
-| `/track <person>` | Add one person to your subscription — searchable |
+| `/start` | Quick guide — main commands up front: `/track`, `/untrack`, `/tracklist`, `/settime`, `/report` |
+| `/track <person>` | Add one person to your subscription — searchable, start typing a name |
 | `/untrack <person>` | Remove one person from your subscription — searchable |
 | `/tracklist` | Show who's in your subscription |
+| `/subscribe` | Bulk-pick/browse everyone instead of one by one (checkbox list — chunked past 25 people) |
 | `/settime 09:00` | Your morning report time (UTC+2); no argument shows the current one |
 | `/report` | Get a report for the last workday right now |
 | `/weekly` | Hours progress for the current week |
@@ -138,9 +142,10 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 2. Lead: `/subscribe` (pick the PMs) → `/setchannel` in the PMs' channel → `/reminders on` if they also want evening nudges.
 
 **A PM tracks their developers' hours and reports**
-1. If a developer isn't already tracked (check `/members`), use `/track <name>` — or `/addmember` if they're not in the roster at all yet.
+1. `/track <name>` — most developers are already in `CANDIDATE_ROSTER`, so this alone adds them. If a name doesn't come up (check `/members`), use `/addmember` first, then `/track`.
 2. Link them to Discord: `/linkdiscord`.
 3. PM: `/setchannel` in the devs' channel → `/settime`.
+4. `/tracklist` any time, to see who's currently tracked.
 
 **Granting a new PM access to the bot**
 1. Lead: `/alloweduser add`, pick the person from the nickname suggestions (or paste their Discord ID).
@@ -207,7 +212,12 @@ duplicated replies and duplicated scheduled DMs to real people.
 Day offs aren't stored here at all — they're read live from Renormalize on every report
 (see **Day off** above).
 
-People defined in code (`TEAM` and `RENORMALIZE_IDS` in `config.py`) aren't stored in the
-database — the `TEAM` names are also used as primary keys in several of the tables above, so
-renaming them in code would orphan every existing row referencing the old name. To change the
-core roster or someone's hour target, edit `config.py` and redeploy.
+People defined in code (`TEAM`, `RENORMALIZE_IDS` and `CANDIDATE_ROSTER` in `config.py`)
+aren't stored in the database — their names are also used as primary keys in several of the
+tables above, so renaming them in code would orphan every existing row referencing the old
+name. To change the core roster or someone's hour target, edit `config.py` and redeploy.
+
+If someone was added with `/addmember` *before* they existed in `CANDIDATE_ROSTER`, they'd
+end up in both the hardcoded roster and `custom_members` — `_deduped_custom_members()` in
+`db.py` filters `custom_members` against everyone already baked into code, so they're only
+ever counted once in reports and `/members`.
