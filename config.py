@@ -49,7 +49,7 @@ MEMBER_NAMES   = [m[0] for m in TEAM]
 DAILY_TARGET:  dict[str, float] = {m[0]: m[2] for m in TEAM}
 WEEKLY_TARGET: dict[str, float] = {m[0]: m[3] for m in TEAM}
 
-# Renormalize user IDs — find them with !findmembers,
+# Renormalize user IDs — find them with !renormalizeusers,
 # or manually: open the employee's report in Renormalize, the ID is in the URL: ?id=XXXXX
 RENORMALIZE_IDS: dict[str, Optional[int]] = {
     "Aleksey Siedin":        76544,
@@ -97,7 +97,7 @@ ADDMEMBER_CANDIDATE_IDS: frozenset[int] = frozenset({
 
 # The same curated pool, minus the 8 TEAM members above (already tracked with their own
 # real targets) — baked straight into the trackable roster so everyone's already pickable
-# in /subscribe from the start, no command/action needed. Flat 8h/40h target: we don't
+# with /track from the start, no command/action needed. Flat 8h/40h target: we don't
 # have individual targets for them like TEAM does. (renormalize_id, display_name)
 CANDIDATE_ROSTER: list[tuple[int, str]] = [
     (76435, "Albina Haivan"),
