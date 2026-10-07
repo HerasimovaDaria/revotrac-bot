@@ -57,3 +57,20 @@ RENORMALIZE_IDS: dict[str, Optional[int]] = {
     "Сергей Безруков":     76718,
     "Станислав Селиванов": 76657,
 }
+
+# Renormalize IDs that /addmember is allowed to *suggest* by name (engineering-adjacent
+# roles only — not sales, HR, or other departments; curated by the PM). Adding someone by
+# a known Renormalize ID directly still works regardless of this list — this only limits
+# what shows up when searching/autocompleting by name, so the bot doesn't surface the
+# whole company directory. Edit this set (and redeploy) to change who's suggestable.
+ADDMEMBER_CANDIDATE_IDS: frozenset[int] = frozenset({
+    76217, 76218, 76220, 76223, 76238, 76239, 76435, 76444,
+    76471, 76508, 76509, 76536, 76537, 76542, 76544, 76547,
+    76548, 76603, 76606, 76607, 76618, 76619, 76630, 76632,
+    76646, 76647, 76653, 76654, 76656, 76657, 76658, 76659,
+    76661, 76663, 76665, 76667, 76668, 76669, 76671, 76672,
+    76673, 76675, 76682, 76689, 76716, 76718, 76721, 76727,
+    76754, 76760, 76775, 76776, 76777, 76795, 76800, 76808,
+    76811, 76813, 76814, 76817, 76818, 76819, 76823, 76824,
+    76827,
+})

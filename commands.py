@@ -8,7 +8,16 @@ from discord import app_commands
 from discord.ext import commands
 
 from client import bot
-from config import MOSCOW, PM_USER_ID, REMINDER_HOUR, REMINDER_MINUTE, RENORMALIZE_API_KEY, TEAM, log
+from config import (
+    ADDMEMBER_CANDIDATE_IDS,
+    MOSCOW,
+    PM_USER_ID,
+    REMINDER_HOUR,
+    REMINDER_MINUTE,
+    RENORMALIZE_API_KEY,
+    TEAM,
+    log,
+)
 from db import (
     _all_members,
     _all_renormalize_ids,
@@ -250,7 +259,11 @@ async def cmd_linkdiscord(ctx: commands.Context, *, args: str = "") -> None:
 async def _renormalize_user_autocomplete(
     interaction: discord.Interaction, current: str,
 ) -> list[app_commands.Choice[str]]:
-    """Live-search Renormalize accounts (active, not already tracked) by name or email."""
+    """Live-search Renormalize accounts by name or email — curated candidates only
+    (ADDMEMBER_CANDIDATE_IDS), active, not already tracked. A known ID outside this
+    list can still be added directly in !addmember/#addmember's numeric-ID path —
+    this only limits what gets *suggested* by name, so the bot doesn't surface the
+    whole company directory (sales, HR, other departments, …)."""
     try:
         users = await fetch_all_renormalize_users()
     except Exception as exc:
@@ -260,7 +273,8 @@ async def _renormalize_user_autocomplete(
     cur = current.casefold().strip()
     matches = [
         u for u in users
-        if u.get("status") == "active" and u.get("id") not in existing_ids
+        if u.get("id") in ADDMEMBER_CANDIDATE_IDS
+        and u.get("status") == "active" and u.get("id") not in existing_ids
         and (not cur or cur in u.get("name", "").casefold() or cur in u.get("email", "").casefold())
     ]
     return [
@@ -299,7 +313,8 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
         q          = person.casefold()
         candidates = [
             u for u in users
-            if u.get("status") == "active" and u.get("id") not in existing_ids
+            if u.get("id") in ADDMEMBER_CANDIDATE_IDS
+            and u.get("status") == "active" and u.get("id") not in existing_ids
             and q in u.get("name", "").casefold()
         ]
         if not candidates:
