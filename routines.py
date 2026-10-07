@@ -14,7 +14,7 @@ from db import (
     get_subscription,
     get_users_for_time,
 )
-from renormalize import fetch_day_offs, fetch_hours, fetch_week_hours
+from renormalize import fetch_day_offs, fetch_hours, fetch_month_hours, fetch_week_hours
 from reports.authors import fetch_report_authors
 from reports.formatting import MONTHS, format_daily_report, format_weekly_report
 from utils import previous_workday, week_start
@@ -23,10 +23,11 @@ from utils import previous_workday, week_start
 async def _collect_report_data(
     bot:         commands.Bot,
     report_date: date,
-) -> tuple[dict[str, float], set[str], Optional[dict[str, float]], dict]:
-    """Fetch (hours, day_offs, week_hours, authors_cache) once for all subscribers.
+) -> tuple[dict[str, float], set[str], Optional[dict[str, float]], dict[str, float], dict]:
+    """Fetch (hours, day_offs, week_hours, month_hours, authors_cache) once for all subscribers.
 
     week_hours is fetched only when *report_date* is Friday (weekly summary day).
+    month_hours (month-to-date, for the "behind this month" figure) is fetched every day.
     authors_cache starts empty and is filled per reports channel in _deliver_report,
     so each channel is read once even when several subscribers share it.
     """
@@ -38,6 +39,12 @@ async def _collect_report_data(
 
     day_offs = await fetch_day_offs(report_date)
 
+    try:
+        month_hours = await fetch_month_hours(report_date)
+    except Exception as exc:
+        log.exception("fetch_month_hours failed: %s", exc)
+        month_hours = {name: 0.0 for name in MEMBER_NAMES}
+
     week_hours: Optional[dict[str, float]] = None
     if report_date.weekday() == 4:
         try:
@@ -46,7 +53,7 @@ async def _collect_report_data(
             log.exception("fetch_week_hours failed: %s", exc)
             week_hours = {name: 0.0 for name in MEMBER_NAMES}
 
-    return hours, day_offs, week_hours, {}
+    return hours, day_offs, week_hours, month_hours, {}
 
 
 async def _build_report_text(
@@ -55,6 +62,7 @@ async def _build_report_text(
     report_date:    date,
     hours:          dict[str, float],
     week_hours:     Optional[dict[str, float]],
+    month_hours:    dict[str, float],
     day_offs:       set[str],
     filter_members: Optional[list[str]],
     authors_cache:  dict,
@@ -65,7 +73,7 @@ async def _build_report_text(
         authors_cache[channel_id] = await fetch_report_authors(bot, report_date, channel_id)
     report_authors = authors_cache[channel_id]
 
-    text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors)
+    text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors, month_hours)
     if week_hours is not None:
         weekly_text = format_weekly_report(week_start(report_date), week_hours, filter_members)
         if weekly_text:
@@ -79,13 +87,14 @@ async def _deliver_report(
     report_date:    date,
     hours:          dict[str, float],
     week_hours:     Optional[dict[str, float]],   # None → no weekly section
+    month_hours:    dict[str, float],
     day_offs:       set[str],
     filter_members: Optional[list[str]],
     authors_cache:  dict,                         # {channel_id: authors} shared within one run
 ) -> None:
     """Fetch user and send them the daily DM (+ weekly progress on Fridays)."""
     try:
-        text = await _build_report_text(bot, user_id, report_date, hours, week_hours,
+        text = await _build_report_text(bot, user_id, report_date, hours, week_hours, month_hours,
                                         day_offs, filter_members, authors_cache)
         user = await bot.fetch_user(user_id)
         await user.send(text)
@@ -102,14 +111,15 @@ async def send_morning_routine(
     yesterday = report_date or previous_workday(today)
 
     # Fetch data once; all subscribers share the same raw numbers
-    hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
+    hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(bot, yesterday)
 
     subscribers = get_all_subscribers()
     if not subscribers:
         log.warning("No subscribers found — nobody will receive a morning report.")
 
     for user_id, members in subscribers.items():
-        await _deliver_report(bot, user_id, yesterday, hours, week_hours, day_offs, members, authors)
+        await _deliver_report(bot, user_id, yesterday, hours, week_hours, month_hours,
+                              day_offs, members, authors)
 
 
 async def send_reminders(bot: commands.Bot, day: date) -> None:
@@ -166,11 +176,11 @@ async def check_report_time(bot: commands.Bot) -> None:
         return
 
     # --- Fetch data once for all subscribers at this time slot ---
-    hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
+    hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(bot, yesterday)
 
     for user_id in user_ids:
         members = get_subscription(user_id)
         if members:
             await _deliver_report(
-                bot, user_id, yesterday, hours, week_hours, day_offs, members, authors
+                bot, user_id, yesterday, hours, week_hours, month_hours, day_offs, members, authors
             )

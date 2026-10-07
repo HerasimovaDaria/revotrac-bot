@@ -38,8 +38,8 @@ from db import (
     save_reminders,
     save_reports_channel,
 )
-from renormalize import fetch_all_renormalize_users, fetch_week_hours
-from reports.formatting import format_weekly_report
+from renormalize import fetch_all_renormalize_users, fetch_month_hours, fetch_week_hours
+from reports.formatting import format_monthly_report, format_weekly_report
 from routines import _build_report_text, _collect_report_data
 from ui.subscribe import SubscribeView, _subscribe_prompt
 from utils import _find_member, _resolve_discord_user, previous_workday, week_start
@@ -105,9 +105,10 @@ async def cmd_report(ctx: commands.Context) -> None:
     today     = datetime.now(UTC3).date()
     yesterday = previous_workday(today)
 
-    hours, day_offs, week_hours, authors = await _collect_report_data(bot, yesterday)
+    hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(bot, yesterday)
 
-    text = await _build_report_text(bot, user_id, yesterday, hours, week_hours, day_offs, members, authors)
+    text = await _build_report_text(bot, user_id, yesterday, hours, week_hours, month_hours,
+                                    day_offs, members, authors)
     await _reply(ctx, text)
 
 
@@ -125,7 +126,8 @@ async def cmd_start(ctx: commands.Context) -> None:
         "That's it — tomorrow morning you'll get a DM with only the people who need "
         "attention. Vacations and sick leave are detected automatically.\n\n"
         "**Also useful:** `/report` (get it now) · `/weekly` (week progress) · "
-        "`/reminders on` (auto-nudge people who forgot) · `/members` (who's tracked)\n\n"
+        "`/monthly` (who's behind this month) · `/reminders on` (auto-nudge people who "
+        "forgot) · `/members` (who's tracked)\n\n"
         "-# No access? Ask the Head of PM for `/alloweduser add`."
     )
     await _reply(ctx, text)
@@ -152,6 +154,34 @@ async def cmd_weekly(ctx: commands.Context) -> None:
     week_hours = await fetch_week_hours(wb)
     text       = format_weekly_report(wb, week_hours, members) or "None of your people have a weekly hour target."
 
+    await _reply(ctx, text)
+
+
+@bot.hybrid_command(name="monthly", description="Who's behind this month — only people with a shortfall")
+async def cmd_monthly(ctx: commands.Context) -> None:
+    """!monthly — show month-to-date hours shortfall for your subscribed members (behind only)."""
+    user_id = ctx.author.id
+    members = get_subscription(user_id)
+
+    if not members:
+        await _reply(
+            ctx,
+            "⚠️ You don't have a subscription.\n"
+            "Use `/subscribe` to choose whose hours you want to see."
+        )
+        return
+
+    await _working(ctx)
+
+    today = datetime.now(UTC3).date()
+    try:
+        month_hours = await fetch_month_hours(today)
+    except Exception as exc:
+        log.exception("fetch_month_hours failed: %s", exc)
+        await _reply(ctx, "❌ Couldn't fetch hours from Renormalize. Try again in a bit.")
+        return
+
+    text = format_monthly_report(today, month_hours, members)
     await _reply(ctx, text)
 
 

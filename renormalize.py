@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 
 from config import RENORMALIZE_API_KEY, UTC3, log
 from db import _all_members, _all_renormalize_ids
+from utils import workdays_between
 
 # ---------------------------------------------------------------------------
 # Workspace user directory — GET /v1/users (NOT /members, which is 501 Not Implemented).
@@ -186,6 +187,52 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
                 totals[name] = round(total_sec / 3600, 2)
             except Exception as exc:
                 log.exception("fetch_week_hours failed for %s: %s", name, exc)
+
+    return totals
+
+
+async def fetch_month_hours(target_date: date) -> dict[str, float]:
+    """
+    Return total hours worked per team member from the 1st of *target_date*'s month
+    through *target_date* (inclusive). 1 API call per member.
+    """
+    month_start = target_date.replace(day=1)
+    all_m       = _all_members()
+    all_ids     = _all_renormalize_ids()
+    totals: dict[str, float] = {m[0]: 0.0 for m in all_m}
+
+    if not RENORMALIZE_API_KEY:
+        workdays = workdays_between(month_start, target_date)
+        for name, _en, daily, _ in all_m:
+            if not daily:
+                continue
+            totals[name] = round(random.gauss(daily * workdays * 0.85, daily * workdays * 0.1 or 1), 2)
+        return totals
+
+    import httpx
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+        for name, _en, _, _ in all_m:
+            renorm_id = all_ids.get(name)
+            if renorm_id is None:
+                continue
+            try:
+                resp = await client.get(
+                    "https://api.renormalize.com/v1/time/progression",
+                    params={
+                        "user_ids": str(renorm_id),
+                        "start_at": month_start.isoformat(),
+                        "end_at":   (target_date + timedelta(days=1)).isoformat(),  # exclusive → +1
+                    },
+                    headers=headers,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                entries = resp.json().get(str(renorm_id), [])
+                total_sec = sum(e.get("total_time", 0) for e in entries)
+                totals[name] = round(total_sec / 3600, 2)
+            except Exception as exc:
+                log.exception("fetch_month_hours failed for %s: %s", name, exc)
 
     return totals
 

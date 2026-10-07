@@ -36,15 +36,15 @@ Sent on workdays at the time each subscriber picked with `/settime` (default 09:
    - any message from the person themselves counts;
    - if another bot posted the report (e.g. a "Daily Reports" bot), the author is read from an embed field named `Developer`/`Author`/`User` (or their Russian equivalents, for reports already posted that way) — if a `Date` field names a different day, it doesn't count;
    - both plain text channels and forums work (forums: all posts, including archived ones).
-4. **What shows up.** Only people with an issue: an hours shortfall and/or a missing report. Everyone else is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
-5. **Weekly.** Friday's report also includes weekly hours progress. Any day, `/weekly` shows it on demand.
+4. **What shows up.** Only people with an issue: an hours shortfall and/or a missing report. Each flagged person also gets their month-to-date shortfall (hours still owed since the 1st of the month, at their daily target × workdays elapsed) — someone can be fine for the month but short today, or the other way round. Everyone with no issue is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
+5. **Weekly and monthly.** Friday's report also includes weekly hours progress for everyone (same as `/weekly`, on demand any day). `/monthly` is separate — month-to-date, **only people who are behind** (everyone else is omitted, not just summarized).
 
 Example:
 
 ```
 ### Friday, October 2
-🔴 David · 6.8 of 8h · no report
-🟡 George · 7.5 of 8h
+🔴 David · 6.8 of 8h today · 4.2h behind this month · no report
+🟡 George · 7.5 of 8h today · on track this month
 🟡 Jane Doe · no report
 -# The other 4 — no issues
 ```
@@ -106,6 +106,7 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | `/settime 09:00` | Your morning report time (UTC+3); no argument shows the current one |
 | `/report` | Get a report for the last workday right now |
 | `/weekly` | Hours progress for the current week |
+| `/monthly` | Who's behind this month — only people with a shortfall |
 | `/members` | Everyone tracked, plus their Discord links |
 | `/addmember <person>` | Add someone — start typing a name for live suggestions, or paste a Renormalize ID directly |
 | `/addperson <name> <discord>` | Add someone without Renormalize — only their daily report is checked |

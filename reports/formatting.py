@@ -4,6 +4,7 @@ from datetime import date
 from typing import Optional
 
 from db import _all_members, get_discord_links
+from utils import workdays_between
 
 
 def status_emoji(worked: float, target: float, day_off: bool) -> str:
@@ -30,12 +31,21 @@ def _day_title(d: date) -> str:
     return f"{WEEKDAYS[d.weekday()]}, {MONTHS[d.month - 1]} {d.day}"
 
 
+def _month_shortfall(daily: float, done: float, report_date: date) -> float:
+    """Hours still owed from the 1st of report_date's month through report_date,
+    at *daily* hours/workday. 0 if caught up or ahead."""
+    workdays = workdays_between(report_date.replace(day=1), report_date)
+    target   = daily * workdays
+    return max(target - done, 0.0)
+
+
 def format_daily_report(
     report_date:    date,
     hours:          dict[str, float],
     day_offs:       set[str],
     filter_members: Optional[list[str]] = None,   # None → all members
     report_authors: Optional[set[int]] = None,    # None → report check disabled
+    month_hours:    Optional[dict[str, float]] = None,   # None → skip the month-to-date figure
 ) -> str:
     """Show only members with an hours shortfall or a missing daily report."""
     header = f"### {_day_title(report_date)}\n"
@@ -63,7 +73,10 @@ def format_daily_report(
         if emoji == "✅" and not no_report:
             continue
         marker = "🟡" if emoji == "✅" else emoji
-        line   = f"{marker} **{name}** · {_h(worked)} of {daily:g}h"
+        line   = f"{marker} **{name}** · {_h(worked)} of {daily:g}h today"
+        if month_hours is not None:
+            short = _month_shortfall(daily, month_hours.get(name, 0.0), report_date)
+            line += f" · {_h(short)}h behind this month" if short > 0 else " · on track this month"
         if no_report:
             line += " · no report"
         lines.append(line)
@@ -104,4 +117,33 @@ def format_weekly_report(
 
     if not lines:
         return ""
+    return header + "\n".join(lines)
+
+
+def format_monthly_report(
+    report_date:    date,
+    month_hours:    dict[str, float],
+    filter_members: Optional[list[str]] = None,   # None → all members
+) -> str:
+    """Month-to-date shortfall, people who are behind only — everyone else is omitted."""
+    workdays = workdays_between(report_date.replace(day=1), report_date)
+    header   = f"### {MONTHS[report_date.month - 1]} — {workdays} workdays so far\n"
+
+    active = [(n, d, w) for n, _en, d, w in _all_members()
+              if filter_members is None or n in filter_members]
+
+    lines: list[str] = []
+    for name, daily, _ in active:
+        if not daily:                     # report-only person
+            continue
+        done   = month_hours.get(name, 0.0)
+        target = daily * workdays
+        short  = max(target - done, 0.0)
+        if short <= 0:
+            continue
+        pct = int(min(done / target, 1.0) * 100) if target else 0
+        lines.append(f"🔴 **{name}** · {_h(done)} of {_h(target)}h · {pct}%\n-# {_h(short)}h behind")
+
+    if not lines:
+        return "✅ Everyone's on track this month."
     return header + "\n".join(lines)
