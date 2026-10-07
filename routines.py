@@ -18,7 +18,7 @@ from db import (
 )
 from renormalize import fetch_hours, fetch_week_hours
 from reports.authors import fetch_report_authors
-from reports.formatting import MONTHS_GEN, format_daily_report, format_weekly_report
+from reports.formatting import MONTHS, format_daily_report, format_weekly_report
 from ui.dayoff import DayOffView
 from utils import previous_workday, week_start
 
@@ -123,7 +123,7 @@ async def send_morning_routine(
         pm   = await bot.fetch_user(PM_USER_ID)
         view = DayOffView(today)
         await pm.send(
-            f"📅 **Кто сегодня ({today.strftime('%d.%m.%Y')}) не работает?**",
+            f"📅 **Who's off today ({today.strftime('%d.%m.%Y')})?**",
             view=view,
         )
     except Exception as exc:
@@ -156,8 +156,8 @@ async def send_reminders(bot: commands.Bot, day: date) -> None:
         try:
             user = await bot.fetch_user(uid)
             await user.send(
-                f"Привет! Не вижу твоего daily-отчёта за сегодня ({day.day} {MONTHS_GEN[day.month - 1]}) "
-                f"в {where}.\n-# Отчёт засчитывается до 23:59 UTC+3."
+                f"Hey! I don't see your daily report for today ({MONTHS[day.month - 1]} {day.day}) "
+                f"in {where}.\n-# A report counts up until 23:59 UTC+3."
             )
         except Exception as exc:
             log.exception("Failed to send reminder to %s: %s", uid, exc)
@@ -204,7 +204,7 @@ async def check_report_time(bot: commands.Bot) -> None:
             pm   = await bot.fetch_user(PM_USER_ID)
             view = DayOffView(today)
             await pm.send(
-                f"📅 **Кто сегодня ({today.strftime('%d.%m.%Y')}) не работает?**",
+                f"📅 **Who's off today ({today.strftime('%d.%m.%Y')})?**",
                 view=view,
             )
         except Exception as exc:

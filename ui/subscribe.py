@@ -8,8 +8,8 @@ from ui.common import _chunk_placeholder, _member_chunks
 
 def _subscribe_prompt(current: list[str]) -> str:
     if current:
-        return f"📋 **Твоя подписка:** {', '.join(current)}\n\nВыбери, кого хочешь отслеживать:"
-    return "📋 У тебя пока нет подписки.\nВыбери сотрудников, чьи часы ты хочешь видеть:"
+        return f"📋 **Your subscription:** {', '.join(current)}\n\nPick who you want to track:"
+    return "📋 You don't have a subscription yet.\nPick the people whose hours you want to see:"
 
 
 class SubscribeSelect(discord.ui.Select):
@@ -19,7 +19,7 @@ class SubscribeSelect(discord.ui.Select):
         options = [
             discord.SelectOption(
                 label=(f"{en_name}  (id {all_ids[name]})" if all_ids.get(name)
-                       else f"{en_name}  (только отчёты)"),
+                       else f"{en_name}  (reports only)"),
                 value=name,
                 default=name in current,
             )
@@ -52,7 +52,7 @@ class EditSubscriptionView(discord.ui.View):
         super().__init__(timeout=300)
         self.user_id = user_id
 
-    @discord.ui.button(label="Изменить подписку", style=discord.ButtonStyle.secondary, emoji="✏️")
+    @discord.ui.button(label="Edit subscription", style=discord.ButtonStyle.secondary, emoji="✏️")
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         current = get_subscription(self.user_id)
         view    = SubscribeView(self.user_id)
@@ -72,13 +72,13 @@ class SubscribeView(discord.ui.View):
         self.selects: list[SubscribeSelect] = []
         for i, chunk in enumerate(chunks):
             placeholder = _chunk_placeholder(
-                "Выберите сотрудников для отслеживания…", i, chunk, len(chunks))
+                "Choose people to track…", i, chunk, len(chunks))
             select = SubscribeSelect(current, chunk, placeholder)
             select.row = i
             self.selects.append(select)
             self.add_item(select)
 
-    @discord.ui.button(label="Сохранить", style=discord.ButtonStyle.success, emoji="💾", row=4)
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.success, emoji="💾", row=4)
     async def save(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         chosen = [n for s in self.selects for n in s.chosen]
         save_subscription(self.user_id, chosen)
@@ -88,15 +88,15 @@ class SubscribeView(discord.ui.View):
             bullet_list = "\n".join(f"  • {n}" for n in chosen)
             h, m = get_preference(self.user_id)
             msg = (
-                f"✅ **Подписка сохранена!**\n\n"
-                f"Будешь получать отчёты по:\n{bullet_list}\n\n"
-                f"⏰ Время отчёта: **{h:02d}:{m:02d} UTC+3**.\n"
-                f"Изменить время: `!settime HH:MM`  (например, `!settime 08:30`)"
+                f"✅ **Subscription saved!**\n\n"
+                f"You'll get reports for:\n{bullet_list}\n\n"
+                f"⏰ Report time: **{h:02d}:{m:02d} UTC+3**.\n"
+                f"Change the time: `!settime HH:MM`  (e.g. `!settime 08:30`)"
             )
         else:
             msg = (
-                "⚠️ Подписка пустая — ты не будешь получать утренние отчёты.\n"
-                "Нажми «Изменить подписку», чтобы добавить людей."
+                "⚠️ Empty subscription — you won't get morning reports.\n"
+                "Click \"Edit subscription\" to add people."
             )
 
         await interaction.response.edit_message(

@@ -63,12 +63,12 @@ async def _working(ctx: commands.Context) -> None:
 async def _deny(ctx: commands.Context) -> None:
     """PM-only command called by someone else."""
     if ctx.interaction:
-        await ctx.send("🚫 Только для PM.", ephemeral=True)
+        await ctx.send("🚫 PM only.", ephemeral=True)
     else:
         await ctx.message.add_reaction("🚫")
 
 
-@bot.hybrid_command(name="subscribe", description="Выбрать сотрудников для утреннего отчёта")
+@bot.hybrid_command(name="subscribe", description="Choose which people appear in your morning report")
 async def cmd_subscribe(ctx: commands.Context) -> None:
     """!subscribe — choose which team members appear in your daily reports."""
     user_id = ctx.author.id
@@ -78,7 +78,7 @@ async def cmd_subscribe(ctx: commands.Context) -> None:
     await _reply(ctx, _subscribe_prompt(current), view=view)
 
 
-@bot.hybrid_command(name="report", description="Получить отчёт за прошлый рабочий день прямо сейчас")
+@bot.hybrid_command(name="report", description="Get a report for the last workday right now")
 async def cmd_report(ctx: commands.Context) -> None:
     """!report — trigger your personalized morning report right now."""
     user_id = ctx.author.id
@@ -87,8 +87,8 @@ async def cmd_report(ctx: commands.Context) -> None:
     if not members:
         await _reply(
             ctx,
-            "⚠️ У тебя нет подписки.\n"
-            "Используй `/subscribe`, чтобы выбрать, чьи часы ты хочешь видеть в отчёте."
+            "⚠️ You don't have a subscription.\n"
+            "Use `/subscribe` to choose whose hours you want to see in your report."
         )
         return
 
@@ -103,9 +103,9 @@ async def cmd_report(ctx: commands.Context) -> None:
     await _reply(ctx, text)
 
 
-@bot.hybrid_command(name="dayoff", description="Отметить, кто не работает в выбранный день (только PM)")
-@app_commands.describe(date_str="Дата ДД.ММ, по умолчанию сегодня")
-@app_commands.rename(date_str="дата")
+@bot.hybrid_command(name="dayoff", description="Mark who's off on a given day (PM only)")
+@app_commands.describe(date_str="Date DD.MM, defaults to today")
+@app_commands.rename(date_str="date")
 async def cmd_dayoff(ctx: commands.Context, date_str: Optional[str] = None) -> None:
     """!dayoff [DD.MM] — open day-off selector for a given date (PM only)."""
     if ctx.author.id != PM_USER_ID:
@@ -117,49 +117,49 @@ async def cmd_dayoff(ctx: commands.Context, date_str: Optional[str] = None) -> N
             today  = datetime.now(MOSCOW).date()
             parsed = datetime.strptime(date_str, "%d.%m").replace(year=today.year).date()
         except ValueError:
-            await ctx.send("❌ Неверный формат. Пример: `!dayoff 25.05`")
+            await ctx.send("❌ Invalid format. Example: `!dayoff 25.05`")
             return
     else:
         parsed = datetime.now(MOSCOW).date()
 
     view = DayOffView(parsed)
-    await _reply(ctx, f"📅 **Кто {parsed.strftime('%d.%m.%Y')} не работает?**", view=view)
+    await _reply(ctx, f"📅 **Who's off on {parsed.strftime('%d.%m.%Y')}?**", view=view)
 
 
-@bot.hybrid_command(name="start", description="Что умеет бот и как его настроить")
+@bot.hybrid_command(name="start", description="What this bot does and how to set it up")
 async def cmd_start(ctx: commands.Context) -> None:
     """!start — onboarding: show what this bot does and how to set it up."""
     text = (
-        "👋 **Привет! Я слежу за часами команды в Renormalize.**\n"
-        "Каждое утро буду присылать тебе в личку отчёт по нужным людям.\n\n"
+        "👋 **Hi! I track the team's hours in Renormalize.**\n"
+        "Every morning I'll DM you a report on the people you choose.\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "**🚀 Быстрый старт — 3 шага:**\n\n"
-        "**1. Посмотри, кто уже есть в списке**\n"
+        "**🚀 Quick start — 3 steps:**\n\n"
+        "**1. See who's already tracked**\n"
         "```\n!members\n```\n"
-        "**2. Если нужного человека нет — добавь его**\n"
-        "```\n!addmember Имя Фамилия\n```\n"
-        "*(или `/addmember` — Discord сам подскажет имя из Renormalize)*\n\n"
-        "**3. Подпишись на нужных людей и выбери время отчёта**\n"
+        "**2. If someone's missing — add them**\n"
+        "```\n!addmember First Last\n```\n"
+        "*(or `/addmember` — Discord will suggest the name straight from Renormalize)*\n\n"
+        "**3. Subscribe to the people you want and pick your report time**\n"
         "```\n!subscribe\n!settime 09:00\n```\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "**📋 Все команды:**\n\n"
-        "`!members` — список всех доступных сотрудников\n"
-        "`!addmember <имя>` — добавить человека (есть автодополнение в `/addmember`)\n"
-        "`!subscribe` — выбрать, чьи часы видеть в отчёте\n"
-        "`!linkdiscord <имя> <ID>` — привязать Discord для проверки daily-отчётов\n"
-        "`!addperson <имя> <ID>` — добавить человека без Renormalize (только отчёты)\n"
-        "`!setchannel` — написать в канале с отчётами, чтобы проверять именно его\n"
-        "`!settime HH:MM` — время ежедневного отчёта (UTC+3, по умолчанию 09:00)\n"
-        "`!reminders on` — вечером напоминать людям из подписки, если они не написали отчёт\n"
-        "`!report` — получить отчёт прямо сейчас\n"
-        "`!weekly` — прогресс за текущую неделю\n"
-        "`!start` — показать эту инструкцию снова\n\n"
-        "💡 Все команды можно вызывать через `/` — Discord покажет подсказки.\n"
+        "**📋 All commands:**\n\n"
+        "`!members` — list everyone available for tracking\n"
+        "`!addmember <name>` — add a person (autocomplete in `/addmember`)\n"
+        "`!subscribe` — choose whose hours to see in your report\n"
+        "`!linkdiscord <name> <ID>` — link Discord for daily-report checks\n"
+        "`!addperson <name> <ID>` — add a person without Renormalize (reports only)\n"
+        "`!setchannel` — run this in a channel to check daily reports there\n"
+        "`!settime HH:MM` — your daily report time (UTC+3, default 09:00)\n"
+        "`!reminders on` — evening DM to your subscription's people who haven't reported\n"
+        "`!report` — get a report right now\n"
+        "`!weekly` — progress for the current week\n"
+        "`!start` — show this guide again\n\n"
+        "💡 Every command also works with `/` — Discord will show hints.\n"
     )
     await _reply(ctx, text)
 
 
-@bot.hybrid_command(name="weekly", description="Прогресс по часам за текущую неделю")
+@bot.hybrid_command(name="weekly", description="Hours progress for the current week")
 async def cmd_weekly(ctx: commands.Context) -> None:
     """!weekly — show current-week progress for your subscribed members."""
     user_id = ctx.author.id
@@ -168,8 +168,8 @@ async def cmd_weekly(ctx: commands.Context) -> None:
     if not members:
         await _reply(
             ctx,
-            "⚠️ У тебя нет подписки.\n"
-            "Используй `/subscribe`, чтобы выбрать, чьи часы ты хочешь видеть."
+            "⚠️ You don't have a subscription.\n"
+            "Use `/subscribe` to choose whose hours you want to see."
         )
         return
 
@@ -178,21 +178,21 @@ async def cmd_weekly(ctx: commands.Context) -> None:
     today      = datetime.now(MOSCOW).date()
     wb         = week_start(today)
     week_hours = await fetch_week_hours(wb)
-    text       = format_weekly_report(wb, week_hours, members) or "У твоих сотрудников нет недельной нормы часов."
+    text       = format_weekly_report(wb, week_hours, members) or "None of your people have a weekly hour target."
 
     await _reply(ctx, text)
 
 
-@bot.hybrid_command(name="members", description="Список сотрудников и привязок Discord")
+@bot.hybrid_command(name="members", description="List of tracked people and their Discord links")
 async def cmd_members(ctx: commands.Context) -> None:
     """!members — list all people available for tracking."""
-    lines = ["**👥 Все доступные сотрудники:**\n"]
+    lines = ["**👥 All tracked people:**\n"]
     all_ids = _all_renormalize_ids()
     links   = get_discord_links()
 
     def link_str(name: str) -> str:
         uid = links.get(name)
-        return f" · <@{uid}>" if uid else " · ⛓️‍💥 нет Discord"
+        return f" · <@{uid}>" if uid else " · ⛓️‍💥 no Discord"
 
     for name, en_name, daily, _ in TEAM:
         rid = all_ids.get(name, "?")
@@ -200,16 +200,16 @@ async def cmd_members(ctx: commands.Context) -> None:
 
     custom = get_custom_members()
     if custom:
-        lines.append("\n**Добавлены вручную:**")
+        lines.append("\n**Added manually:**")
         for rid, dname, daily, _ in custom:
             if rid < 0:
-                lines.append(f"{dname}  (только отчёты){link_str(dname)}")
+                lines.append(f"{dname}  (reports only){link_str(dname)}")
             else:
                 lines.append(f"`{rid}` — {dname}  ({daily:.0f}h/day){link_str(dname)}")
 
-    lines.append("\n➕ Добавить: `!addmember <renormalize_id> <имя>`")
-    lines.append("📝 Без часов, только отчёты: `!addperson <имя> <ID>`")
-    lines.append("🔗 Привязать Discord: `!linkdiscord <имя> @user`")
+    lines.append("\n➕ Add: `!addmember <renormalize_id> <name>`")
+    lines.append("📝 No hours, reports only: `!addperson <name> <ID>`")
+    lines.append("🔗 Link Discord: `!linkdiscord <name> @user`")
     # Show mentions without pinging people
     await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
 
@@ -220,29 +220,29 @@ async def cmd_linkdiscord(ctx: commands.Context, *, args: str = "") -> None:
     parts = args.split()
     if len(parts) < 2:
         await ctx.send(
-            "❌ Формат: `!linkdiscord <имя> <@user | ник | Discord ID>`\n"
-            "Например: `!linkdiscord Самвел @samvel` или `!linkdiscord Aleksey Siedin 954344819092783184`"
+            "❌ Format: `!linkdiscord <name> <@user | nick | Discord ID>`\n"
+            "Example: `!linkdiscord Samvel @samvel` or `!linkdiscord Aleksey Siedin 954344819092783184`"
         )
         return
 
     name, spec = " ".join(parts[:-1]), parts[-1]
     member = _find_member(name)
     if member is None:
-        await ctx.send(f"❌ Сотрудник «{name}» не найден (или подходит несколько). Список: `!members`")
+        await ctx.send(f"❌ No match for «{name}» (or more than one). List: `!members`")
         return
 
     user = await _resolve_discord_user(spec, ctx.message.mentions)
     if user is None:
         await ctx.send(
-            f"❌ Не нашёл пользователя Discord «{spec}».\n"
-            "Укажи ник (как в профиле, без пробелов) или Discord ID "
-            "(ПКМ по человеку → «Копировать ID», нужен режим разработчика)."
+            f"❌ Couldn't find Discord user «{spec}».\n"
+            "Give a nickname (as in their profile, no spaces) or a Discord ID "
+            "(right-click them → \"Copy ID\", needs Developer Mode)."
         )
         return
 
     save_discord_link(member, user.id)
     await ctx.send(
-        f"✅ **{member}** привязан к {user.mention}.",
+        f"✅ **{member}** linked to {user.mention}.",
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -269,22 +269,22 @@ async def _renormalize_user_autocomplete(
     ]
 
 
-@bot.hybrid_command(name="addmember", description="Добавить сотрудника — начни печатать имя, подскажет Renormalize")
-@app_commands.describe(person="Начни вводить имя — выбери из подсказок (или вставь Renormalize ID)")
-@app_commands.rename(person="сотрудник")
+@bot.hybrid_command(name="addmember", description="Add a person — start typing a name, Renormalize suggests it")
+@app_commands.describe(person="Start typing a name — pick a suggestion (or paste a Renormalize ID)")
+@app_commands.rename(person="person")
 @app_commands.autocomplete(person=_renormalize_user_autocomplete)
 async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
-    """!addmember <имя или Renormalize ID> — add a person found live in Renormalize."""
+    """!addmember <name or Renormalize ID> — add a person found live in Renormalize."""
     person = person.strip()
     if not person:
-        await ctx.send("❌ Укажи имя или Renormalize ID. Пример: `!addmember Ivan Petrov`.")
+        await ctx.send("❌ Give a name or Renormalize ID. Example: `!addmember Ivan Petrov`.")
         return
 
     try:
         users = await fetch_all_renormalize_users()
     except Exception as exc:
         log.exception("addmember: fetch_all_renormalize_users failed: %s", exc)
-        await ctx.send("❌ Не смог получить список из Renormalize. Попробуй ещё раз чуть позже.")
+        await ctx.send("❌ Couldn't fetch the list from Renormalize. Try again in a bit.")
         return
 
     existing_ids = {rid for rid in _all_renormalize_ids().values() if rid}
@@ -293,7 +293,7 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
         renorm_id = int(person)
         match     = next((u for u in users if u.get("id") == renorm_id), None)
         if match is None:
-            await ctx.send(f"❌ В Renormalize нет пользователя с ID `{renorm_id}`.")
+            await ctx.send(f"❌ No Renormalize user with ID `{renorm_id}`.")
             return
     else:
         q          = person.casefold()
@@ -304,34 +304,34 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
         ]
         if not candidates:
             await ctx.send(
-                f"❌ Не нашёл «{person}» в Renormalize. Проверь написание — "
-                f"или используй `/addmember`, там живые подсказки."
+                f"❌ No match for «{person}» in Renormalize. Check the spelling — "
+                f"or use `/addmember`, it has live suggestions."
             )
             return
         if len(candidates) > 1:
             lines = "\n".join(f"• {u['name']} — id `{u['id']}`" for u in candidates[:10])
             await ctx.send(
-                f"⚠️ Нашёл несколько совпадений для «{person}»:\n{lines}\n\n"
-                f"Уточни имя или используй `/addmember` с подсказками."
+                f"⚠️ Found several matches for «{person}»:\n{lines}\n\n"
+                f"Be more specific, or use `/addmember` with suggestions."
             )
             return
         match     = candidates[0]
         renorm_id = match["id"]
 
     if renorm_id in existing_ids:
-        await ctx.send(f"⚠️ **{match['name']}** уже в списке.")
+        await ctx.send(f"⚠️ **{match['name']}** is already in the list.")
         return
 
     add_custom_member(renorm_id, match["name"])
     await ctx.send(
-        f"✅ Добавлен: **{match['name']}** (id `{renorm_id}`)\n"
-        f"Теперь его можно выбрать через `!subscribe`."
+        f"✅ Added: **{match['name']}** (id `{renorm_id}`)\n"
+        f"You can now pick them in `!subscribe`."
     )
 
 
-@bot.hybrid_command(name="removemember", description="Удалить добавленного вручную сотрудника (только PM)")
-@app_commands.describe(arg="Renormalize ID или имя")
-@app_commands.rename(arg="кого")
+@bot.hybrid_command(name="removemember", description="Remove a manually-added person (PM only)")
+@app_commands.describe(arg="Renormalize ID or name")
+@app_commands.rename(arg="who")
 async def cmd_removemember(ctx: commands.Context, *, arg: str) -> None:
     """!removemember <renormalize_id | name> — remove a custom member (PM only)."""
     if ctx.author.id != PM_USER_ID:
@@ -348,9 +348,9 @@ async def cmd_removemember(ctx: commands.Context, *, arg: str) -> None:
 
     deleted = bool(renorm_id) and remove_custom_member(renorm_id)
     if deleted:
-        await ctx.send(f"✅ «{arg}» удалён из списка.")
+        await ctx.send(f"✅ «{arg}» removed from the list.")
     else:
-        await ctx.send(f"⚠️ «{arg}» не найден среди добавленных вручную.")
+        await ctx.send(f"⚠️ «{arg}» not found among manually-added people.")
 
 
 @bot.command(name="addperson")
@@ -359,45 +359,45 @@ async def cmd_addperson(ctx: commands.Context, *, args: str = "") -> None:
     parts = args.split()
     if len(parts) < 2:
         await ctx.send(
-            "❌ Формат: `!addperson <имя> <@user | ник | Discord ID>`\n"
-            "Например: `!addperson Daria Herasimova 954344819092783184`"
+            "❌ Format: `!addperson <name> <@user | nick | Discord ID>`\n"
+            "Example: `!addperson Daria Herasimova 954344819092783184`"
         )
         return
 
     name, spec = " ".join(parts[:-1]), parts[-1]
     if any(name.casefold() in (n.casefold(), en.casefold()) for n, en, _, _ in _all_members()):
-        await ctx.send(f"⚠️ «{name}» уже есть в списке. Привязать Discord: `!linkdiscord {name} <ID>`")
+        await ctx.send(f"⚠️ «{name}» is already in the list. Link Discord: `!linkdiscord {name} <ID>`")
         return
 
     user = await _resolve_discord_user(spec, ctx.message.mentions)
     if user is None:
-        await ctx.send(f"❌ Не нашёл пользователя Discord «{spec}». Лучше укажи Discord ID.")
+        await ctx.send(f"❌ Couldn't find Discord user «{spec}». Better to give a Discord ID.")
         return
 
     add_report_only_member(name, user.id)
     await ctx.send(
-        f"✅ Добавлен(а) **{name}** ({user.mention}) — без часов, проверяется только daily-отчёт.\n"
-        f"Теперь можно выбрать в `!subscribe`.",
+        f"✅ Added **{name}** ({user.mention}) — no hours, only the daily-report check.\n"
+        f"You can now pick them in `!subscribe`.",
         allowed_mentions=discord.AllowedMentions.none(),
     )
 
 
-@bot.hybrid_command(name="setchannel", description="Сделать этот канал (или канал по ID) каналом с daily-отчётами")
-@app_commands.describe(channel_id="ID канала; пусто — текущий канал")
-@app_commands.rename(channel_id="id_канала")
+@bot.hybrid_command(name="setchannel", description="Make this channel (or a channel by ID) your daily-reports channel")
+@app_commands.describe(channel_id="Channel ID; leave empty for the current channel")
+@app_commands.rename(channel_id="channel_id")
 async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[str] = None) -> None:
     """!setchannel [channel_id] — set YOUR daily-reports channel (run it in that channel or pass an ID)."""
     if channel_id is not None and not channel_id.strip().isdigit():
-        await _reply(ctx, "❌ ID канала — это число. ПКМ по каналу → «Копировать ID канала».")
+        await _reply(ctx, "❌ A channel ID is a number. Right-click the channel → \"Copy Channel ID\".")
         return
 
     if channel_id is None and ctx.guild is None:
         current = get_reports_channel(ctx.author.id)
         await _reply(ctx,
-            (f"📝 Твой канал с отчётами: <#{current}> (`{current}`).\n" if current
-             else "📝 Канал с отчётами не задан — отчёты не проверяются.\n")
-            + "Изменить: напиши `!setchannel` прямо в нужном канале (или в посте форума), "
-              "либо `!setchannel <ID канала>`."
+            (f"📝 Your reports channel: <#{current}> (`{current}`).\n" if current
+             else "📝 No reports channel set — reports aren't checked.\n")
+            + "Change it: run `!setchannel` right in the target channel (or forum post), "
+              "or `!setchannel <channel_id>`."
         )
         return
 
@@ -408,7 +408,7 @@ async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[str] = None
             cid     = int(channel_id)
             channel = bot.get_channel(cid) or await bot.fetch_channel(cid)
     except discord.HTTPException:
-        await _reply(ctx, f"❌ Канал `{channel_id}` не найден или у бота нет к нему доступа.")
+        await _reply(ctx, f"❌ Channel `{channel_id}` not found or the bot can't access it.")
         return
 
     # A command typed inside a thread / forum post → use the parent channel
@@ -417,69 +417,69 @@ async def cmd_setchannel(ctx: commands.Context, channel_id: Optional[str] = None
 
     guild = getattr(channel, "guild", None)
     if guild is None:
-        await _reply(ctx, "❌ Это не канал сервера. Напиши `!setchannel` в канале с отчётами.")
+        await _reply(ctx, "❌ That's not a server channel. Run `!setchannel` in your reports channel.")
         return
     if not channel.permissions_for(guild.me).read_message_history:
         await _reply(
             ctx,
-            f"⚠️ У бота нет права «Читать историю сообщений» в <#{channel.id}> — "
-            f"выдай его в настройках канала и повтори."
+            f"⚠️ The bot doesn't have \"Read Message History\" in <#{channel.id}> — "
+            f"grant it in the channel settings and try again."
         )
         return
 
     save_reports_channel(ctx.author.id, channel.id)
     await _reply(
         ctx,
-        f"✅ Готово: в твоих отчётах проверяется канал **#{channel.name}** "
-        f"на сервере **{guild.name}**."
+        f"✅ Done: your reports will check channel **#{channel.name}** "
+        f"on server **{guild.name}**."
     )
 
 
-@bot.hybrid_command(name="reminders", description="Вечерние напоминания тем, кто не написал отчёт (вкл/выкл)")
-@app_commands.describe(mode="on — включить, off — выключить; пусто — показать статус")
-@app_commands.rename(mode="режим")
-@app_commands.choices(mode=[app_commands.Choice(name="включить", value="on"),
-                            app_commands.Choice(name="выключить", value="off")])
+@bot.hybrid_command(name="reminders", description="Evening DM to people who haven't posted a report (on/off)")
+@app_commands.describe(mode="on — enable, off — disable; leave empty to show status")
+@app_commands.rename(mode="mode")
+@app_commands.choices(mode=[app_commands.Choice(name="on", value="on"),
+                            app_commands.Choice(name="off", value="off")])
 async def cmd_reminders(ctx: commands.Context, mode: Optional[str] = None) -> None:
     """!reminders [on|off] — evening DM to people in your subscription who haven't posted a report."""
     when = f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d} UTC+3"
     if mode is None:
-        state = "включены" if get_reminders(ctx.author.id) else "выключены"
+        state = "on" if get_reminders(ctx.author.id) else "off"
         await ctx.send(
-            f"🔔 Напоминания {state}. Если включены, в {when} по будням бот пишет в личку "
-            f"каждому из твоей подписки, кто ещё не написал отчёт в твоём канале.\n"
-            f"Включить: `/reminders on`, выключить: `/reminders off`",
+            f"🔔 Reminders are {state}. When on, at {when} on workdays the bot DMs "
+            f"everyone in your subscription who hasn't posted a report in your channel yet.\n"
+            f"Turn on: `/reminders on`, turn off: `/reminders off`",
             ephemeral=True,
         )
         return
 
     mode = mode.strip().lower()
-    if mode not in ("on", "off", "вкл", "выкл"):
-        await ctx.send("❌ Используй `on` или `off`.", ephemeral=True)
+    if mode not in ("on", "off"):
+        await ctx.send("❌ Use `on` or `off`.", ephemeral=True)
         return
-    enabled = mode in ("on", "вкл")
+    enabled = mode == "on"
     save_reminders(ctx.author.id, enabled)
     if enabled:
         channel_id = get_reports_channel(ctx.author.id)
-        note = "" if channel_id else "\n⚠️ Канал с отчётами не задан — напиши `/setchannel` в нём."
+        note = "" if channel_id else "\n⚠️ No reports channel set — run `/setchannel` there."
         await ctx.send(
-            f"🔔 Включено: в {when} по будням людям из твоей подписки без отчёта придёт напоминание.{note}",
+            f"🔔 Enabled: at {when} on workdays, people in your subscription without a report get a reminder.{note}",
             ephemeral=True,
         )
     else:
-        await ctx.send("🔕 Напоминания выключены.", ephemeral=True)
+        await ctx.send("🔕 Reminders disabled.", ephemeral=True)
 
 
-@bot.hybrid_command(name="settime", description="Время утреннего отчёта (UTC+3), например 09:00")
-@app_commands.describe(time_str="ЧЧ:ММ; пусто — показать текущее время")
-@app_commands.rename(time_str="время")
+@bot.hybrid_command(name="settime", description="Your daily report time (UTC+3), e.g. 09:00")
+@app_commands.describe(time_str="HH:MM; leave empty to show the current time")
+@app_commands.rename(time_str="time")
 async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> None:
     """!settime [HH:MM] — set your daily report time (UTC+3). No arg = show current."""
     if time_str is None:
         h, m = get_preference(ctx.author.id)
         await ctx.send(
-            f"🕐 Твоё текущее время отчёта: **{h:02d}:{m:02d} UTC+3**.\n"
-            f"Изменить: `!settime 08:30`"
+            f"🕐 Your current report time: **{h:02d}:{m:02d} UTC+3**.\n"
+            f"Change it: `!settime 08:30`"
         )
         return
 
@@ -490,13 +490,13 @@ async def cmd_settime(ctx: commands.Context, time_str: Optional[str] = None) -> 
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError("out of range")
     except (ValueError, IndexError):
-        await ctx.send("❌ Неверный формат. Пример: `!settime 09:00` или `!settime 8:30`")
+        await ctx.send("❌ Invalid format. Example: `!settime 09:00` or `!settime 8:30`")
         return
 
     save_preference(ctx.author.id, hour, minute)
     await ctx.send(
-        f"✅ Время ежедневного отчёта установлено: **{hour:02d}:{minute:02d} UTC+3**.\n"
-        f"Если ещё не выбрал сотрудников — используй `!subscribe`."
+        f"✅ Daily report time set: **{hour:02d}:{minute:02d} UTC+3**.\n"
+        f"Haven't picked people yet? Use `!subscribe`."
     )
 
 
@@ -528,51 +528,51 @@ async def _discord_user_autocomplete(
     return [app_commands.Choice(name=label, value=str(uid)) for uid, label in seen.items()][:25]
 
 
-@bot.tree.command(name="linkdiscord", description="Привязать сотрудника к его аккаунту Discord")
-@app_commands.describe(member="Сотрудник", user="Начни вводить ник — или вставь Discord ID")
-@app_commands.rename(member="сотрудник", user="discord")
+@bot.tree.command(name="linkdiscord", description="Link a tracked person to their Discord account")
+@app_commands.describe(member="Person", user="Start typing a nickname — or paste a Discord ID")
+@app_commands.rename(member="person", user="discord")
 @app_commands.autocomplete(member=_member_autocomplete, user=_discord_user_autocomplete)
 async def slash_linkdiscord(interaction: discord.Interaction, member: str, user: str) -> None:
     ephemeral = interaction.guild is not None
     name      = _find_member(member)
     if name is None:
         await interaction.response.send_message(
-            f"❌ Сотрудник «{member}» не найден. Выбери из подсказок.", ephemeral=True)
+            f"❌ No match for «{member}». Pick one from the suggestions.", ephemeral=True)
         return
     target = await _resolve_discord_user(user)
     if target is None:
         await interaction.response.send_message(
-            f"❌ Не нашёл пользователя Discord «{user}». Выбери из подсказок или вставь ID.",
+            f"❌ Couldn't find Discord user «{user}». Pick a suggestion or paste an ID.",
             ephemeral=True)
         return
     save_discord_link(name, target.id)
     await interaction.response.send_message(
-        f"✅ **{name}** привязан к {target.mention}.",
+        f"✅ **{name}** linked to {target.mention}.",
         ephemeral=ephemeral, allowed_mentions=discord.AllowedMentions.none(),
     )
 
 
-@bot.tree.command(name="addperson", description="Добавить человека без Renormalize (только проверка отчётов)")
-@app_commands.describe(name="Имя для отчётов", user="Начни вводить ник — или вставь Discord ID")
-@app_commands.rename(name="имя", user="discord")
+@bot.tree.command(name="addperson", description="Add a person without Renormalize (daily-report check only)")
+@app_commands.describe(name="Name for reports", user="Start typing a nickname — or paste a Discord ID")
+@app_commands.rename(name="name", user="discord")
 @app_commands.autocomplete(user=_discord_user_autocomplete)
 async def slash_addperson(interaction: discord.Interaction, name: str, user: str) -> None:
     ephemeral = interaction.guild is not None
     name      = name.strip()
     if any(name.casefold() in (n.casefold(), en.casefold()) for n, en, _, _ in _all_members()):
         await interaction.response.send_message(
-            f"⚠️ «{name}» уже есть в списке. Привязать Discord: `/linkdiscord`", ephemeral=True)
+            f"⚠️ «{name}» is already in the list. Link Discord: `/linkdiscord`", ephemeral=True)
         return
     target = await _resolve_discord_user(user)
     if target is None:
         await interaction.response.send_message(
-            f"❌ Не нашёл пользователя Discord «{user}». Выбери из подсказок или вставь ID.",
+            f"❌ Couldn't find Discord user «{user}». Pick a suggestion or paste an ID.",
             ephemeral=True)
         return
     add_report_only_member(name, target.id)
     await interaction.response.send_message(
-        f"✅ Добавлен(а) **{name}** ({target.mention}) — без часов, проверяется только daily-отчёт.\n"
-        f"Теперь можно выбрать в `/subscribe`.",
+        f"✅ Added **{name}** ({target.mention}) — no hours, only the daily-report check.\n"
+        f"You can now pick them in `/subscribe`.",
         ephemeral=ephemeral, allowed_mentions=discord.AllowedMentions.none(),
     )
 
@@ -630,14 +630,14 @@ async def cmd_test_api(ctx: commands.Context) -> None:
     await ctx.message.add_reaction("✅")
 
 
-@bot.hybrid_command(name="findmembers", description="Список всех сотрудников в Renormalize с их ID (только PM)")
+@bot.hybrid_command(name="findmembers", description="List everyone in Renormalize with their ID (PM only)")
 async def cmd_find_members(ctx: commands.Context) -> None:
     """!findmembers — list all Renormalize workspace members with their IDs (PM only)."""
     if ctx.author.id != PM_USER_ID:
         await _deny(ctx)
         return
     if not RENORMALIZE_API_KEY:
-        await _reply(ctx, "❌ RENORMALIZE_API_KEY не задан в .env")
+        await _reply(ctx, "❌ RENORMALIZE_API_KEY is not set in .env")
         return
 
     await _working(ctx)
@@ -647,15 +647,15 @@ async def cmd_find_members(ctx: commands.Context) -> None:
     except Exception as exc:
         log.exception("findmembers API error: %s", exc)
         user = await bot.fetch_user(PM_USER_ID)
-        await user.send(f"❌ Ошибка запроса к Renormalize:\n```{exc}```")
-        await _reply(ctx, "❌ Ошибка запроса к Renormalize, подробности — в личке.")
+        await user.send(f"❌ Renormalize request failed:\n```{exc}```")
+        await _reply(ctx, "❌ Renormalize request failed, details sent to your DMs.")
         return
 
     if not members:
-        await _reply(ctx, "⚠️ Renormalize вернул пустой список.")
+        await _reply(ctx, "⚠️ Renormalize returned an empty list.")
         return
 
-    lines = ["👥 **Сотрудники в Renormalize (ID — Имя — статус):**\n"]
+    lines = ["👥 **People in Renormalize (ID — Name — status):**\n"]
     for m in sorted(members, key=lambda x: (x.get("status", "?"), x.get("name", ""))):
         uid    = m.get("id") or m.get("user_id") or "?"
         name   = (
@@ -671,18 +671,18 @@ async def cmd_find_members(ctx: commands.Context) -> None:
     # Split if over Discord's 2000-char limit
     for chunk in [text[i:i+1900] for i in range(0, len(text), 1900)]:
         await user.send(chunk)
-    await _reply(ctx, f"✅ Список отправлен тебе в личку ({len(members)} чел.).")
+    await _reply(ctx, f"✅ Sent you the list in DMs ({len(members)} people).")
 
 
 @bot.hybrid_command(name="alloweduser",
-                    description="Кто может пользоваться ботом — добавить / убрать / показать список (только PM)")
-@app_commands.describe(action="add — разрешить, remove — запретить, list — показать список",
-                       user="Начни вводить ник — или вставь Discord ID (не нужен для list)")
-@app_commands.rename(action="действие", user="discord")
+                    description="Who can use the bot — add / remove / list (PM only)")
+@app_commands.describe(action="add — grant access, remove — revoke access, list — show the list",
+                       user="Start typing a nickname — or paste a Discord ID (not needed for list)")
+@app_commands.rename(action="action", user="discord")
 @app_commands.choices(action=[
-    app_commands.Choice(name="add — разрешить", value="add"),
-    app_commands.Choice(name="remove — запретить", value="remove"),
-    app_commands.Choice(name="list — показать список", value="list"),
+    app_commands.Choice(name="add — grant access", value="add"),
+    app_commands.Choice(name="remove — revoke access", value="remove"),
+    app_commands.Choice(name="list — show the list", value="list"),
 ])
 @app_commands.autocomplete(user=_discord_user_autocomplete)
 async def cmd_alloweduser(ctx: commands.Context, action: str, user: Optional[str] = None) -> None:
@@ -695,33 +695,33 @@ async def cmd_alloweduser(ctx: commands.Context, action: str, user: Optional[str
 
     if action == "list":
         ids = get_allowed_users()
-        header = "✅ **Доступ есть у тебя (PM) и у:**\n" if ids else "Доступ есть только у тебя (PM) — список пуст."
+        header = "✅ **Access: you (PM) and:**\n" if ids else "Only you (PM) have access — the list is empty."
         lines  = "\n".join(f"• <@{uid}> (`{uid}`)" for uid in ids)
         await _reply(ctx, header + lines, allowed_mentions=discord.AllowedMentions.none())
         return
 
     if action not in ("add", "remove"):
-        await _reply(ctx, "❌ Действие: `add`, `remove` или `list`.")
+        await _reply(ctx, "❌ Action: `add`, `remove` or `list`.")
         return
 
     if not user:
-        await _reply(ctx, "❌ Укажи, кого добавить/убрать — ник, упоминание или Discord ID.")
+        await _reply(ctx, "❌ Say who to add/remove — a nickname, mention, or Discord ID.")
         return
 
     target = await _resolve_discord_user(user, ctx.message.mentions)
     if target is None:
-        await _reply(ctx, f"❌ Не нашёл пользователя Discord «{user}». Выбери из подсказок или вставь ID.")
+        await _reply(ctx, f"❌ Couldn't find Discord user «{user}». Pick a suggestion or paste an ID.")
         return
 
     if action == "add":
         add_allowed_user(target.id)
-        await _reply(ctx, f"✅ {target.mention} теперь может пользоваться ботом.",
+        await _reply(ctx, f"✅ {target.mention} can now use the bot.",
                      allowed_mentions=discord.AllowedMentions.none())
     else:
         if target.id == PM_USER_ID:
-            await _reply(ctx, "⚠️ Себя (PM) убрать нельзя — у тебя доступ всегда есть.")
+            await _reply(ctx, "⚠️ Can't remove yourself (PM) — you always have access.")
             return
         removed = remove_allowed_user(target.id)
-        msg = (f"✅ {target.mention} больше не может пользоваться ботом." if removed
-               else f"⚠️ {target.mention} и так не было в списке разрешённых.")
+        msg = (f"✅ {target.mention} can no longer use the bot." if removed
+               else f"⚠️ {target.mention} wasn't on the allowed list anyway.")
         await _reply(ctx, msg, allowed_mentions=discord.AllowedMentions.none())

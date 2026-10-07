@@ -17,7 +17,7 @@ from db import is_allowed_user
 # (managed with !alloweduser) can use any command, ! or /.
 # ---------------------------------------------------------------------------
 
-_DENY_MSG = "🚫 У тебя нет доступа к этому боту."
+_DENY_MSG = "🚫 You don't have access to this bot."
 
 
 def _is_authorized(user_id: int) -> bool:
