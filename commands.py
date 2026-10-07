@@ -128,8 +128,7 @@ async def cmd_start(ctx: commands.Context) -> None:
         "attention. Vacations and sick leave are detected automatically.\n\n"
         "**Also useful:** `/subscribe` (bulk pick/browse everyone instead of one by one) · "
         "`/untrack` (remove someone) · `/report` (get it now) · `/weekly` (week progress) · "
-        "`/monthly` (who's behind this month) · `/reminders on` (auto-nudge people who "
-        "forgot) · `/members` (who's tracked)\n\n"
+        "`/monthly` (who's behind this month) · `/members` (who's tracked)\n\n"
         "-# No access? Ask the Lead for `/alloweduser add`."
     )
     await _reply(ctx, text)
