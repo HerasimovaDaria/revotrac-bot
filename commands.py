@@ -128,9 +128,10 @@ async def cmd_start(ctx: commands.Context) -> None:
         "```\n"
         "That's it — tomorrow morning you'll get a DM with only the people who need "
         "attention. Vacations and sick leave are detected automatically.\n\n"
-        "**Also useful:** `/subscribe` (bulk pick/browse everyone instead of one by one) · "
-        "`/untrack` (remove someone) · `/report` (get it now) · `/weekly` (week progress) · "
-        "`/monthly` (who's behind this month) · `/members` (who's tracked)\n\n"
+        "**Also useful:** `/tracklist` (who you're tracking) · `/subscribe` (bulk pick/browse "
+        "everyone instead of one by one) · `/untrack` (remove someone) · `/report` (get it "
+        "now) · `/weekly` (week progress) · `/monthly` (who's behind this month) · "
+        "`/members` (who's tracked)\n\n"
         "-# No access? Ask the Lead for `/alloweduser add`."
     )
     await _reply(ctx, text)
@@ -544,40 +545,24 @@ async def _member_autocomplete(
     ][:25]
 
 
-async def _track_autocomplete(
-    interaction: discord.Interaction, current: str,
-) -> list[app_commands.Choice[str]]:
-    """Same as _member_autocomplete, plus a selectable "tracklist" entry — some Discord
-    clients won't let you submit free text that isn't in the suggestion list, so the
-    special value needs to actually show up as a pickable option, not just be typeable."""
-    cur = current.casefold().strip()
-    choices: list[app_commands.Choice[str]] = []
-    if not cur or "tracklist".startswith(cur):
-        choices.append(app_commands.Choice(name="📋 tracklist — show who you're tracking", value="tracklist"))
-    choices += [
-        app_commands.Choice(name=n[:100], value=n)
-        for n, en, _, _ in _all_members()
-        if cur in n.casefold() or cur in en.casefold()
-    ]
-    return choices[:25]
+@bot.hybrid_command(name="tracklist", description="Show who you're currently tracking")
+async def cmd_tracklist(ctx: commands.Context) -> None:
+    """!tracklist — show the people in your own subscription."""
+    current = get_subscription(ctx.author.id)
+    if not current:
+        await ctx.send("You're not tracking anyone yet. `/track <name>` to add someone.")
+        return
+    names = "\n".join(f"• {n}" for n in current)
+    await ctx.send(f"**You're tracking {len(current)}:**\n{names}")
 
 
-@bot.hybrid_command(name="track", description="Add one person to your subscription — searchable (or \"tracklist\" to see who you track)")
-@app_commands.describe(member="Start typing a name, or pick \"tracklist\" to see your current subscription")
+@bot.hybrid_command(name="track", description="Add one person to your subscription — searchable")
+@app_commands.describe(member="Start typing a name")
 @app_commands.rename(member="person")
-@app_commands.autocomplete(member=_track_autocomplete)
+@app_commands.autocomplete(member=_member_autocomplete)
 async def cmd_track(ctx: commands.Context, *, member: str) -> None:
     """!track <name> — add one person to your subscription (searchable, unlike /subscribe's
-    checkbox list). `!track tracklist` shows who you're currently tracking."""
-    if member.strip().casefold() == "tracklist":
-        current = get_subscription(ctx.author.id)
-        if not current:
-            await ctx.send("You're not tracking anyone yet. `/track <name>` to add someone.")
-        else:
-            names = "\n".join(f"• {n}" for n in current)
-            await ctx.send(f"**You're tracking {len(current)}:**\n{names}")
-        return
-
+    checkbox list). See /tracklist for who you're currently tracking."""
     name = _find_member(member)
     if name is None:
         await ctx.send(f"❌ No match for «{member}» (or more than one). Try `/subscribe` to browse everyone.")
