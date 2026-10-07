@@ -514,7 +514,7 @@ async def _member_autocomplete(
 ) -> list[app_commands.Choice[str]]:
     cur = current.casefold()
     return [
-        app_commands.Choice(name=f"{en} ({n})"[:100] if en != n else n[:100], value=n)
+        app_commands.Choice(name=n[:100], value=n)
         for n, en, _, _ in _all_members()
         if cur in n.casefold() or cur in en.casefold()
     ][:25]
