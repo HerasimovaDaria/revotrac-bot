@@ -338,46 +338,6 @@ async def cmd_addmember(ctx: commands.Context, *, person: str) -> None:
     )
 
 
-@bot.hybrid_command(name="addcandidates",
-                    description="Add everyone from the curated candidate list who isn't tracked yet (PM only)")
-async def cmd_addcandidates(ctx: commands.Context) -> None:
-    """!addcandidates — bulk-add the whole ADDMEMBER_CANDIDATE_IDS pool (PM only)."""
-    if ctx.author.id != PM_USER_ID:
-        await _deny(ctx)
-        return
-
-    await _working(ctx)
-
-    try:
-        users = await fetch_all_renormalize_users()
-    except Exception as exc:
-        log.exception("addcandidates: fetch_all_renormalize_users failed: %s", exc)
-        await ctx.send("❌ Couldn't fetch the list from Renormalize. Try again in a bit.")
-        return
-
-    existing_ids = {rid for rid in _all_renormalize_ids().values() if rid}
-    by_id = {u["id"]: u for u in users if u.get("status") == "active"}
-
-    added: list[str] = []
-    for renorm_id in ADDMEMBER_CANDIDATE_IDS:
-        if renorm_id in existing_ids:
-            continue
-        u = by_id.get(renorm_id)
-        if u is None:
-            continue
-        add_custom_member(renorm_id, u["name"])
-        added.append(u["name"])
-
-    if not added:
-        await ctx.send("✅ Everyone in the candidate list is already tracked — nothing to add.")
-        return
-
-    text = f"✅ Added {len(added)} people — they're now pickable in `/subscribe` (and `/track`):\n"
-    text += "\n".join(f"• {n}" for n in sorted(added))
-    for chunk in [text[i:i + 1900] for i in range(0, len(text), 1900)]:
-        await ctx.send(chunk)
-
-
 @bot.hybrid_command(name="removemember", description="Remove a manually-added person (PM only)")
 @app_commands.describe(arg="Renormalize ID or name")
 @app_commands.rename(arg="who")
