@@ -191,25 +191,28 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
     return totals
 
 
-async def fetch_month_hours(target_date: date) -> dict[str, float]:
+async def fetch_month_hours(target_date: date) -> dict[str, tuple[float, float]]:
     """
-    Return *effective* hours worked per team member from the 1st of *target_date*'s month
-    through *target_date* (inclusive): actual logged hours, plus the full daily target
-    credited for any workday covered by a vacation/sick-leave/absence record — Renormalize
-    treats approved leave as fully worked, not a shortfall, so this matches that. 1 API call
-    per member for hours, plus 1 (cached) for their leave record.
+    Return {name: (worked, target)} from the 1st of *target_date*'s month through
+    *target_date* (inclusive). worked is the actual logged hours — no synthetic credit.
+    target is daily_rate * workdays elapsed, minus daily_rate for each workday covered by a
+    vacation/sick-leave/absence record — the hard cap already accounts for days off, instead
+    of inflating worked hours to paper over them. 1 API call per member for hours, plus 1
+    (cached) for their leave record.
     """
     month_start = target_date.replace(day=1)
+    workdays    = workdays_between(month_start, target_date)
     all_m       = _all_members()
     all_ids     = _all_renormalize_ids()
-    totals: dict[str, float] = {m[0]: 0.0 for m in all_m}
+    totals: dict[str, tuple[float, float]] = {m[0]: (0.0, m[2] * workdays) for m in all_m}
 
     if not RENORMALIZE_API_KEY:
-        workdays = workdays_between(month_start, target_date)
         for name, _en, daily, _ in all_m:
             if not daily:
                 continue
-            totals[name] = round(random.gauss(daily * workdays * 0.85, daily * workdays * 0.1 or 1), 2)
+            target = daily * workdays
+            worked = round(random.gauss(target * 0.85, target * 0.1 or 1), 2)
+            totals[name] = (worked, target)
         return totals
 
     import httpx
@@ -219,6 +222,7 @@ async def fetch_month_hours(target_date: date) -> dict[str, float]:
             renorm_id = all_ids.get(name)
             if renorm_id is None:
                 continue
+            target = daily * workdays
             try:
                 resp = await client.get(
                     "https://api.renormalize.com/v1/time/progression",
@@ -235,12 +239,11 @@ async def fetch_month_hours(target_date: date) -> dict[str, float]:
                 total_sec = sum(e.get("total_time", 0) for e in entries)
                 worked    = total_sec / 3600
 
-                leave_credit = 0.0
                 if daily and renorm_id > 0:
-                    leave_days   = await _leave_workdays_in_range(renorm_id, month_start, target_date)
-                    leave_credit = daily * leave_days
+                    leave_days = await _leave_workdays_in_range(renorm_id, month_start, target_date)
+                    target    -= daily * leave_days
 
-                totals[name] = round(worked + leave_credit, 2)
+                totals[name] = (round(worked, 2), round(target, 2))
             except Exception as exc:
                 log.exception("fetch_month_hours failed for %s: %s", name, exc)
 
