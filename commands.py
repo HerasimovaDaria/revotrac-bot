@@ -149,7 +149,7 @@ async def cmd_weekly(ctx: commands.Context) -> None:
     today      = datetime.now(UTC2).date()
     wb         = week_start(today)
     week_hours = await fetch_week_hours(wb)
-    text       = format_weekly_report(wb, week_hours, members) or "None of your people have a weekly hour target."
+    text       = format_weekly_report(wb, week_hours, members, today) or "None of your people have a weekly hour target."
 
     await _reply(ctx, text)
 
