@@ -125,6 +125,8 @@ async def cmd_start(ctx: commands.Context) -> None:
         "`/report` — get your report right now, don't wait for tomorrow\n\n"
         "**Also useful:** `/weekly` (week progress) · `/monthly` (who's behind this month) · "
         "`/members` (who's tracked)\n\n"
+        "-# `/report` covers the last full workday (not today — the day isn't over yet). "
+        "`/weekly` and `/monthly` include today's hours so far, live.\n"
         "-# No access? Ask the Lead for `/alloweduser add`."
     )
     await _reply(ctx, text)
