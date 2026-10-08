@@ -24,7 +24,7 @@ from utils import previous_workday, week_start
 async def _collect_report_data(
     bot:         commands.Bot,
     report_date: date,
-) -> tuple[dict[str, float], set[str], Optional[dict[str, float]], dict[str, float], dict]:
+) -> tuple[dict[str, float], set[str], Optional[dict[str, float]], dict[str, tuple[float, float]], dict]:
     """Fetch (hours, day_offs, week_hours, month_hours, authors_cache) once for all subscribers.
 
     week_hours is fetched only when *report_date* is Friday (weekly summary day).
@@ -44,7 +44,7 @@ async def _collect_report_data(
         month_hours = await fetch_month_hours(report_date)
     except Exception as exc:
         log.exception("fetch_month_hours failed: %s", exc)
-        month_hours = {name: 0.0 for name in MEMBER_NAMES}
+        month_hours = {name: (0.0, 0.0) for name in MEMBER_NAMES}
 
     week_hours: Optional[dict[str, float]] = None
     if report_date.weekday() == 4:
@@ -63,7 +63,7 @@ async def _build_report_text(
     report_date:    date,
     hours:          dict[str, float],
     week_hours:     Optional[dict[str, float]],
-    month_hours:    dict[str, float],
+    month_hours:    dict[str, tuple[float, float]],
     day_offs:       set[str],
     filter_members: Optional[list[str]],
     authors_cache:  dict,
@@ -76,7 +76,7 @@ async def _build_report_text(
 
     text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors, month_hours)
     if week_hours is not None:
-        weekly_text = format_weekly_report(week_start(report_date), week_hours, filter_members)
+        weekly_text = format_weekly_report(week_start(report_date), week_hours, filter_members, report_date)
         if weekly_text:
             text += "\n\n" + weekly_text
     return text
@@ -88,7 +88,7 @@ async def _deliver_report(
     report_date:    date,
     hours:          dict[str, float],
     week_hours:     Optional[dict[str, float]],   # None → no weekly section
-    month_hours:    dict[str, float],
+    month_hours:    dict[str, tuple[float, float]],
     day_offs:       set[str],
     filter_members: Optional[list[str]],
     authors_cache:  dict,                         # {channel_id: authors} shared within one run
