@@ -20,21 +20,26 @@ YELLOW_THRESHOLD = 2.0   # hours of idle/manually-added time that flags someone 
                          # even if their actual worked hours are otherwise on target
 
 
-def _yellow_suffix(yellow: float) -> str:
-    """' · 3.0h idle/manual', or '' if not worth mentioning."""
-    return f" · {_h(yellow)}h idle/manual" if yellow > 0.05 else ""
+def _yellow_fragment(yellow: float) -> str:
+    """'3.0h idle/manual', or '' if not worth mentioning."""
+    return f"{_h(yellow)}h idle/manual" if yellow > 0.05 else ""
 
 
-def _low_activity_suffix(
+def _low_activity_fragment(
     low_activity: Optional[dict[str, tuple[float, float]]], name: str, label: str = "low activity",
 ) -> str:
-    """' · 2.1h low activity', or '' if not worth mentioning or data isn't available.
+    """'2.1h low activity', or '' if not worth mentioning or data isn't available.
     low_activity maps name -> (tracked_hours, low_activity_hours) from
     renormalize.fetch_low_activity — tracked_hours isn't used here, only the subset."""
     if low_activity is None:
         return ""
     _tracked, low = low_activity.get(name, (0.0, 0.0))
-    return f" · {_h(low)}h {label}" if low > 0.05 else ""
+    return f"{_h(low)}h {label}" if low > 0.05 else ""
+
+
+def _join(*parts: str) -> str:
+    """Join non-empty fragments with ' · ', dropping any that are empty."""
+    return " · ".join(p for p in parts if p)
 
 
 MONTHS   = ["January", "February", "March", "April", "May", "June", "July",
@@ -92,22 +97,25 @@ def format_daily_report(
         flagged_yellow = yellow > YELLOW_THRESHOLD
         if emoji == "✅" and not no_report and not flagged_yellow:
             continue
-        marker = "🟡" if emoji == "✅" else emoji   # ✅-but-flagged still needs a flag
-        line   = f"{marker} **{name}** · {_h(worked)} of {daily:g}h today"
+        marker   = "🟡" if emoji == "✅" else emoji   # ✅-but-flagged still needs a flag
+        headline = f"{marker} **{name}** · {_h(worked)} of {daily:g}h today"
         if emoji == "🔵":
-            line += " · over target today"
-        line += _yellow_suffix(yellow)
-        line += _low_activity_suffix(daily_low_activity, name)
+            headline += " · over target today"
+        if no_report:
+            headline += " · no report"
+
+        details = [_yellow_fragment(yellow), _low_activity_fragment(daily_low_activity, name)]
         if month_hours is not None:
             done, target, _month_yellow = month_hours.get(name, (0.0, 0.0, 0.0))
             delta = done - target
             if abs(delta) > 1:
-                line += f" · {delta:+.1f}h, {_h(done)}/{_h(target)}h this month"
+                details.append(f"{delta:+.1f}h this month ({_h(done)}/{_h(target)}h)")
             else:
-                line += " · on track this month"
-            line += _low_activity_suffix(month_low_activity, name, "low activity this month")
-        if no_report:
-            line += " · no report"
+                details.append("on track this month")
+            details.append(_low_activity_fragment(month_low_activity, name, "low activity this month"))
+        detail_line = _join(*details)
+
+        line = f"{headline}\n-# {detail_line}" if detail_line else headline
         (overtime if emoji == "🔵" else behind).append(line)
 
     ok = len(active) - len(behind) - len(overtime)
@@ -166,9 +174,9 @@ def format_weekly_report(
             marker = "🟡"
         else:
             marker = "✅"
-        line  = f"{marker} **{name}** · {_h(done)} of {weekly:g}h · {pct}%"
-        line += _yellow_suffix(yellow) + _low_activity_suffix(low_activity, name)
-        lines.append(f"{line}\n-# {tail}")
+        line        = f"{marker} **{name}** · {_h(done)} of {weekly:g}h · {pct}%"
+        detail_line = _join(tail, _yellow_fragment(yellow), _low_activity_fragment(low_activity, name))
+        lines.append(f"{line}\n-# {detail_line}")
 
     if not lines:
         return ""
@@ -202,9 +210,9 @@ def format_monthly_report(
         pct   = int(min(done / target, 1.0) * 100) if target else 0
         emoji = "🔴" if behind else "🟡"
         tail  = f"{_h(-delta)}h behind" if behind else "on track"
-        line  = f"{emoji} **{name}** · {_h(done)} of {_h(target)}h · {pct}%"
-        line += _yellow_suffix(yellow) + _low_activity_suffix(low_activity, name)
-        lines.append(f"{line}\n-# {tail}")
+        line        = f"{emoji} **{name}** · {_h(done)} of {_h(target)}h · {pct}%"
+        detail_line = _join(tail, _yellow_fragment(yellow), _low_activity_fragment(low_activity, name))
+        lines.append(f"{line}\n-# {detail_line}")
 
     if not lines:
         return "✅ Everyone's on track this month."
