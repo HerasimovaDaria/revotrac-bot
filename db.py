@@ -7,6 +7,7 @@ file from before this change; it's unused and harmless to leave in place.
 
 import os
 import sqlite3
+from datetime import date
 from typing import Optional
 
 from config import CANDIDATE_ROSTER, DB_PATH, RENAMED_TEAM_MEMBERS, RENORMALIZE_IDS, REPORTS_CHANNEL_ID, TEAM
@@ -41,6 +42,21 @@ def init_db() -> None:
                 display_name   TEXT    NOT NULL,
                 daily_hours    REAL    NOT NULL DEFAULT 8.0,
                 weekly_hours   REAL    NOT NULL DEFAULT 40.0
+            )
+            """
+        )
+        # Per-day cache of Renormalize screenshot activity (renormalize.fetch_low_activity).
+        # Only ever written for days strictly before "today" — a past day's screenshots
+        # don't change retroactively, so once cached it's cached forever; today is always
+        # fetched fresh since it's still accumulating.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS screenshot_activity (
+                renormalize_id INTEGER NOT NULL,
+                day            TEXT    NOT NULL,
+                total_seconds  REAL    NOT NULL,
+                low_seconds    REAL    NOT NULL,
+                PRIMARY KEY (renormalize_id, day)
             )
             """
         )
@@ -228,6 +244,35 @@ def add_report_only_member(name: str, discord_user_id: int) -> None:
     """
     add_custom_member(-discord_user_id, name, daily=0.0, weekly=0.0)
     save_discord_link(name, discord_user_id)
+
+
+# --- screenshot activity cache (renormalize.fetch_low_activity) -------------
+
+def get_screenshot_activity(renorm_id: int, day: date) -> Optional[tuple[float, float]]:
+    """Return (total_seconds, low_activity_seconds) for this person on this day, or None
+    if not cached yet (only past days are ever cached — see init_db)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT total_seconds, low_seconds FROM screenshot_activity "
+            "WHERE renormalize_id = ? AND day = ?",
+            (renorm_id, day.isoformat()),
+        ).fetchone()
+    return (row[0], row[1]) if row else None
+
+
+def save_screenshot_activity(renorm_id: int, day: date, total_seconds: float, low_seconds: float) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO screenshot_activity (renormalize_id, day, total_seconds, low_seconds)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(renormalize_id, day) DO UPDATE SET
+                total_seconds = excluded.total_seconds,
+                low_seconds   = excluded.low_seconds
+            """,
+            (renorm_id, day.isoformat(), total_seconds, low_seconds),
+        )
+        conn.commit()
 
 
 # --- discord link helpers ---------------------------------------------------

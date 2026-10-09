@@ -25,6 +25,18 @@ def _yellow_suffix(yellow: float) -> str:
     return f" · {_h(yellow)}h idle/manual" if yellow > 0.05 else ""
 
 
+def _low_activity_suffix(
+    low_activity: Optional[dict[str, tuple[float, float]]], name: str, label: str = "low activity",
+) -> str:
+    """' · 2.1h low activity', or '' if not worth mentioning or data isn't available.
+    low_activity maps name -> (tracked_hours, low_activity_hours) from
+    renormalize.fetch_low_activity — tracked_hours isn't used here, only the subset."""
+    if low_activity is None:
+        return ""
+    _tracked, low = low_activity.get(name, (0.0, 0.0))
+    return f" · {_h(low)}h {label}" if low > 0.05 else ""
+
+
 MONTHS   = ["January", "February", "March", "April", "May", "June", "July",
             "August", "September", "October", "November", "December"]
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -47,6 +59,8 @@ def format_daily_report(
     filter_members: Optional[list[str]] = None,   # None → all members
     report_authors: Optional[set[int]] = None,    # None → report check disabled
     month_hours:    Optional[dict[str, tuple[float, float, float]]] = None,  # name -> (worked, target, yellow)
+    daily_low_activity: Optional[dict[str, tuple[float, float]]] = None,   # name -> (tracked, low) for today
+    month_low_activity: Optional[dict[str, tuple[float, float]]] = None,   # name -> (tracked, low) this month
 ) -> str:
     """Show members more than 2h behind today, more than 3h over target today (overtime,
     listed separately under "OverTimes:"), missing a daily report, or with more than
@@ -83,6 +97,7 @@ def format_daily_report(
         if emoji == "🔵":
             line += " · over target today"
         line += _yellow_suffix(yellow)
+        line += _low_activity_suffix(daily_low_activity, name)
         if month_hours is not None:
             done, target, _month_yellow = month_hours.get(name, (0.0, 0.0, 0.0))
             delta = done - target
@@ -90,6 +105,7 @@ def format_daily_report(
                 line += f" · {delta:+.1f}h, {_h(done)}/{_h(target)}h this month"
             else:
                 line += " · on track this month"
+            line += _low_activity_suffix(month_low_activity, name, "low activity this month")
         if no_report:
             line += " · no report"
         (overtime if emoji == "🔵" else behind).append(line)
@@ -117,6 +133,7 @@ def format_weekly_report(
     week_hours:     dict[str, tuple[float, float]],   # name -> (worked, yellow)
     filter_members: Optional[list[str]] = None,   # None → all members
     today:          Optional[date] = None,        # None → week_begin (i.e. no days elapsed yet)
+    low_activity:   Optional[dict[str, tuple[float, float]]] = None,   # name -> (tracked, low) this week
 ) -> str:
     """Progress toward the weekly target for everyone — not filtered to problems like the
     daily/monthly reports. The status circle compares done against a *prorated* target
@@ -149,7 +166,8 @@ def format_weekly_report(
             marker = "🟡"
         else:
             marker = "✅"
-        line = f"{marker} **{name}** · {_h(done)} of {weekly:g}h · {pct}%" + _yellow_suffix(yellow)
+        line  = f"{marker} **{name}** · {_h(done)} of {weekly:g}h · {pct}%"
+        line += _yellow_suffix(yellow) + _low_activity_suffix(low_activity, name)
         lines.append(f"{line}\n-# {tail}")
 
     if not lines:
@@ -161,6 +179,7 @@ def format_monthly_report(
     report_date:    date,
     month_hours:    dict[str, tuple[float, float, float]],   # name -> (worked, target, yellow)
     filter_members: Optional[list[str]] = None,   # None → all members
+    low_activity:   Optional[dict[str, tuple[float, float]]] = None,   # name -> (tracked, low) this month
 ) -> str:
     """Month-to-date shortfall, people who are behind only, plus anyone with more than
     YELLOW_THRESHOLD hours of idle/manually-added time this month even if their hours are
@@ -183,7 +202,8 @@ def format_monthly_report(
         pct   = int(min(done / target, 1.0) * 100) if target else 0
         emoji = "🔴" if behind else "🟡"
         tail  = f"{_h(-delta)}h behind" if behind else "on track"
-        line  = f"{emoji} **{name}** · {_h(done)} of {_h(target)}h · {pct}%" + _yellow_suffix(yellow)
+        line  = f"{emoji} **{name}** · {_h(done)} of {_h(target)}h · {pct}%"
+        line += _yellow_suffix(yellow) + _low_activity_suffix(low_activity, name)
         lines.append(f"{line}\n-# {tail}")
 
     if not lines:

@@ -41,7 +41,7 @@ from db import (
     save_reports_channel,
     save_subscription,
 )
-from renormalize import fetch_all_renormalize_users, fetch_month_hours, fetch_week_hours
+from renormalize import fetch_all_renormalize_users, fetch_low_activity, fetch_month_hours, fetch_week_hours
 from reports.formatting import format_monthly_report, format_weekly_report
 from routines import _build_report_text, _collect_report_data
 from utils import _find_member, _resolve_discord_user, previous_workday, week_start
@@ -151,7 +151,13 @@ async def cmd_weekly(ctx: commands.Context) -> None:
     today      = datetime.now(UTC2).date()
     wb         = week_start(today)
     week_hours = await fetch_week_hours(wb, members)
-    text       = format_weekly_report(wb, week_hours, members, today) or "None of your people have a weekly hour target."
+    try:
+        low_activity = await fetch_low_activity(wb, today, members)
+    except Exception as exc:
+        log.exception("fetch_low_activity (weekly) failed: %s", exc)
+        low_activity = None
+    text = format_weekly_report(wb, week_hours, members, today, low_activity) \
+        or "None of your people have a weekly hour target."
 
     await _reply(ctx, text)
 
@@ -179,8 +185,13 @@ async def cmd_monthly(ctx: commands.Context) -> None:
         log.exception("fetch_month_hours failed: %s", exc)
         await _reply(ctx, "❌ Couldn't fetch hours from Renormalize. Try again in a bit.")
         return
+    try:
+        low_activity = await fetch_low_activity(today.replace(day=1), today, members)
+    except Exception as exc:
+        log.exception("fetch_low_activity (monthly) failed: %s", exc)
+        low_activity = None
 
-    text = format_monthly_report(today, month_hours, members)
+    text = format_monthly_report(today, month_hours, members, low_activity)
     await _reply(ctx, text)
 
 

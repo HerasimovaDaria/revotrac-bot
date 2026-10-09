@@ -41,20 +41,31 @@ Sent on workdays at the time each subscriber picked with `/settime` (default 09:
    idle/manual time in the period gets someone shown with a 🟡 circle even if their actual
    hours are otherwise fine — someone can hit their daily target entirely through manually
    added time and that's worth a second look.
-4. **Daily report check.** The bot reads the subscriber's reports channel for that day (00:00–23:59 UTC+2):
+4. **Low activity.** A separate signal from a separate Renormalize endpoint
+   (`/v1/screenshots`, not `/v1/time/progression`) — each screenshot carries
+   `keyboard_usage_per_minute`/`mouse_usage_per_minute` for that interval. Renormalize
+   doesn't hand back a ready-made "low activity" flag; the bot classifies a screenshot as
+   low activity when combined keyboard+mouse usage is below `LOW_ACTIVITY_THRESHOLD` (30,
+   per the team's own definition) and shows the total as "Xh low activity" next to anyone
+   already appearing in a report. It's purely informational — unlike idle/manual time, it's
+   not its own trigger, and it only covers people with real tracker activity: manually-added
+   time has no screenshots at all, so it never shows up here. Past days are cached in the
+   database (a day's screenshots don't change retroactively) — only today, and days never
+   queried before, actually hit the API.
+5. **Daily report check.** The bot reads the subscriber's reports channel for that day (00:00–23:59 UTC+2):
    - any message from the person themselves counts;
    - if another bot posted the report (e.g. a "Daily Reports" bot), the author is read from an embed field named `Developer`/`Author`/`User` (or their Russian equivalents, for reports already posted that way) — if a `Date` field names a different day, it doesn't count;
    - both plain text channels and forums work (forums: all posts, including archived ones).
-5. **What shows up.** Under-track (🔴) people are listed first; a missing report or high idle/manual time (🟡) is flagged the same way even for someone otherwise on target. Overtime (🔵) people are listed separately, under a **OverTimes:** heading at the bottom — kept apart so the main list stays about who needs attention. Each flagged person also gets their month-to-date delta (ahead or behind, since the 1st of the month at their daily target × workdays elapsed) — someone can be fine for the month but short today, or the other way round. Everyone with no issue (on target, report posted, idle/manual time under the threshold) is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
-6. **Weekly and monthly.** Friday's report also includes weekly hours progress for everyone (same as `/weekly`, on demand any day). `/monthly` is separate — month-to-date, **only people who are behind, or over the idle/manual threshold** (everyone else is omitted, not just summarized).
-7. **Which hours count, exactly.** `/report` (and the morning routine) always covers the last *full* workday — never today, since today isn't over yet and would just read as a false shortfall. `/weekly` and `/monthly`, run on demand, are live and include today's hours so far. The month-to-date figure embedded in `/report`'s line follows `/report`'s own cutoff (through yesterday), so it can read slightly differently from standing `/monthly` on the same day — intentional, not a bug.
+6. **What shows up.** Under-track (🔴) people are listed first; a missing report or high idle/manual time (🟡) is flagged the same way even for someone otherwise on target. Overtime (🔵) people are listed separately, under a **OverTimes:** heading at the bottom — kept apart so the main list stays about who needs attention. Each flagged person also gets their month-to-date delta (ahead or behind, since the 1st of the month at their daily target × workdays elapsed) — someone can be fine for the month but short today, or the other way round. Everyone with no issue (on target, report posted, idle/manual time under the threshold) is summarized as "The other N — no issues". People on vacation/sick leave/absence in Renormalize that day are skipped. A separate line lists anyone with no Discord link — their report can't be checked.
+7. **Weekly and monthly.** Friday's report also includes weekly hours progress for everyone (same as `/weekly`, on demand any day). `/monthly` is separate — month-to-date, **only people who are behind, or over the idle/manual threshold** (everyone else is omitted, not just summarized).
+8. **Which hours count, exactly.** `/report` (and the morning routine) always covers the last *full* workday — never today, since today isn't over yet and would just read as a false shortfall. `/weekly` and `/monthly`, run on demand, are live and include today's hours so far. The month-to-date figure embedded in `/report`'s line follows `/report`'s own cutoff (through yesterday), so it can read slightly differently from standing `/monthly` on the same day — intentional, not a bug.
 
 Example:
 
 ```
 ### Friday, October 2
 🔴 David · 4.5 of 8h today · 4.2h behind this month · no report
-🟡 Jane Doe · 8.0 of 8h today · 8.0h idle/manual · on track this month
+🟡 Jane Doe · 8.0 of 8h today · 8.0h idle/manual · 1.5h low activity · on track this month
 -# The other 3 — no issues
 
 **OverTimes:**
@@ -222,6 +233,7 @@ duplicated replies and duplicated scheduled DMs to real people.
 | `custom_members` | people added via `/adddevelopertolist` / `/addperson` (the latter get a negative ID and a 0h target) |
 | `discord_links` | tracked person → Discord ID |
 | `allowed_users` | Discord IDs allowed to use the bot (besides the Lead) — managed with `/alloweduser` |
+| `screenshot_activity` | per-person, per-day cache of low-activity screenshot time (see **Low activity** above) — only past days are written, since a day's screenshots never change retroactively |
 
 Day offs aren't stored here at all — they're read live from Renormalize on every report
 (see **Day off** above).

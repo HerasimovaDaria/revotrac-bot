@@ -15,7 +15,7 @@ from db import (
     get_subscription,
     get_users_for_time,
 )
-from renormalize import fetch_day_offs, fetch_hours, fetch_month_hours, fetch_week_hours
+from renormalize import fetch_day_offs, fetch_hours, fetch_low_activity, fetch_month_hours, fetch_week_hours
 from reports.authors import fetch_report_authors
 from reports.formatting import MONTHS, format_daily_report, format_weekly_report
 from utils import previous_workday, week_start
@@ -78,9 +78,29 @@ async def _build_report_text(
         authors_cache[channel_id] = await fetch_report_authors(bot, report_date, channel_id)
     report_authors = authors_cache[channel_id]
 
-    text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors, month_hours)
+    # report_date is always a past day here (the morning routine reports on "yesterday"),
+    # so this is always cache-eligible after the first subscriber's report builds it.
+    try:
+        daily_la = await fetch_low_activity(report_date, report_date, filter_members)
+    except Exception as exc:
+        log.exception("fetch_low_activity (daily) failed: %s", exc)
+        daily_la = None
+    try:
+        month_la = await fetch_low_activity(report_date.replace(day=1), report_date, filter_members)
+    except Exception as exc:
+        log.exception("fetch_low_activity (month) failed: %s", exc)
+        month_la = None
+
+    text = format_daily_report(report_date, hours, day_offs, filter_members, report_authors,
+                               month_hours, daily_la, month_la)
     if week_hours is not None:
-        weekly_text = format_weekly_report(week_start(report_date), week_hours, filter_members, report_date)
+        try:
+            week_la = await fetch_low_activity(week_start(report_date), report_date, filter_members)
+        except Exception as exc:
+            log.exception("fetch_low_activity (week) failed: %s", exc)
+            week_la = None
+        weekly_text = format_weekly_report(week_start(report_date), week_hours, filter_members,
+                                           report_date, week_la)
         if weekly_text:
             text += "\n\n" + weekly_text
     return text

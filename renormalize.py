@@ -7,8 +7,13 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from config import RENORMALIZE_API_KEY, UTC2, log
-from db import _all_members, _all_renormalize_ids
+from db import _all_members, _all_renormalize_ids, get_screenshot_activity, save_screenshot_activity
 from utils import workdays_between
+
+# Combined keyboard+mouse actions/minute below which a Renormalize screenshot counts as
+# "low activity" — tracked, but with ~no real input during that interval. Per the team's
+# own definition (not something the API classifies for you).
+LOW_ACTIVITY_THRESHOLD = 30
 
 # Cap on simultaneous Renormalize API requests — fetch_* functions fire one request per
 # member via asyncio.gather instead of awaiting them one at a time, which is what made a
@@ -385,3 +390,107 @@ async def fetch_day_offs(target_date: date, members: Optional[list[str]] = None)
 
     results = await asyncio.gather(*(_check(name, rid) for name, rid in candidates))
     return {name for name in results if name}
+
+
+# ---------------------------------------------------------------------------
+# Low activity — GET /v1/screenshots?from=&to=&user_id= (separate endpoint from
+# /v1/time/progression; found via the Renormalize UI's own network tab, same as the other
+# endpoints). Each screenshot carries keyboard_usage_per_minute/mouse_usage_per_minute for
+# that interval — "low activity" (tracked, but ~no real input) isn't a field Renormalize
+# hands back directly, it's our own classification on top: combined usage below
+# LOW_ACTIVITY_THRESHOLD. A past day's screenshots never change retroactively, so once
+# computed they're cached in the database (screenshot_activity table) — only today, and
+# any day never seen before, actually hits the API.
+# ---------------------------------------------------------------------------
+
+async def _fetch_screenshots(
+    client: "object", headers: dict, renorm_id: int, frm: date, to: date,
+) -> list[dict]:
+    """All screenshots for renorm_id in [frm, to) — paginated, 100 per page (API max)."""
+    shots: list[dict] = []
+    page = 1
+    while True:
+        try:
+            resp = await client.get(
+                "https://api.renormalize.com/v1/screenshots",
+                params={
+                    "from":    frm.isoformat(),
+                    "to":      to.isoformat(),
+                    "user_id": str(renorm_id),
+                    "page":    page,
+                    "count":   100,
+                },
+                headers=headers,
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            log.exception("fetch_low_activity: screenshots failed for %s: %s", renorm_id, exc)
+            break
+        shots.extend(data.get("screenshots", []))
+        pagination = data.get("pagination", {})
+        if page >= pagination.get("total_pages", 1):
+            break
+        page += 1
+    return shots
+
+
+async def fetch_low_activity(
+    start_date: date, end_date: date, members: Optional[list[str]] = None,
+) -> dict[str, tuple[float, float]]:
+    """
+    Return {name: (tracked_hours, low_activity_hours)} from Renormalize screenshots between
+    *start_date* and *end_date* (inclusive). tracked_hours is the sum of screenshot
+    durations — not the same figure as fetch_hours()'s "worked" (manually-added/edited
+    time has no screenshots at all, so this is always <= that). low_activity_hours is the
+    subset where keyboard+mouse usage was below LOW_ACTIVITY_THRESHOLD.
+
+    Pass *members* to only fetch for those people. Concurrency capped at _API_CONCURRENCY;
+    past days are cached per person in the database and never re-fetched.
+    """
+    all_m = _scoped_members(members)
+    if not RENORMALIZE_API_KEY:
+        return {m[0]: (0.0, 0.0) for m in all_m}
+
+    all_ids = _all_renormalize_ids()
+    today   = datetime.now(UTC2).date()
+
+    import httpx
+    sem = asyncio.Semaphore(_API_CONCURRENCY)
+
+    async def _day(client: httpx.AsyncClient, headers: dict, renorm_id: int, day: date) -> tuple[float, float]:
+        if day < today:
+            cached = get_screenshot_activity(renorm_id, day)
+            if cached is not None:
+                return cached
+        async with sem:
+            shots = await _fetch_screenshots(client, headers, renorm_id, day, day + timedelta(days=1))
+        total = sum(s.get("duration", 0) for s in shots)
+        low   = sum(
+            s.get("duration", 0) for s in shots
+            if s.get("keyboard_usage_per_minute", 0) + s.get("mouse_usage_per_minute", 0) < LOW_ACTIVITY_THRESHOLD
+        )
+        if day < today:
+            save_screenshot_activity(renorm_id, day, total, low)
+        return total, low
+
+    async def _person(client: httpx.AsyncClient, headers: dict, name: str, renorm_id: Optional[int]):
+        if not renorm_id or renorm_id < 0:
+            return name, (0.0, 0.0)
+        total_sec = low_sec = 0.0
+        d = start_date
+        while d <= end_date:
+            t, l = await _day(client, headers, renorm_id, d)
+            total_sec += t
+            low_sec   += l
+            d += timedelta(days=1)
+        return name, (round(total_sec / 3600, 2), round(low_sec / 3600, 2))
+
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+        pairs = await asyncio.gather(*(
+            _person(client, headers, name, all_ids.get(name)) for name, _en, _, _ in all_m
+        ))
+
+    return dict(pairs)
