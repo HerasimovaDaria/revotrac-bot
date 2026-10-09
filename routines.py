@@ -24,6 +24,9 @@ from utils import previous_workday, week_start
 async def _collect_report_data(
     bot:         commands.Bot,
     report_date: date,
+    members:     Optional[list[str]] = None,   # None → everyone; pass the union of people
+                                                # actually tracked by this batch of subscribers
+                                                # to skip fetching data for the rest of the roster
 ) -> tuple[dict[str, tuple[float, float]], set[str], Optional[dict[str, tuple[float, float]]],
            dict[str, tuple[float, float, float]], dict]:
     """Fetch (hours, day_offs, week_hours, month_hours, authors_cache) once for all subscribers.
@@ -34,15 +37,15 @@ async def _collect_report_data(
     so each channel is read once even when several subscribers share it.
     """
     try:
-        hours = await fetch_hours(report_date)
+        hours = await fetch_hours(report_date, members)
     except Exception as exc:
         log.exception("fetch_hours failed: %s", exc)
         hours = {name: (0.0, 0.0) for name in MEMBER_NAMES}
 
-    day_offs = await fetch_day_offs(report_date)
+    day_offs = await fetch_day_offs(report_date, members)
 
     try:
-        month_hours = await fetch_month_hours(report_date)
+        month_hours = await fetch_month_hours(report_date, members)
     except Exception as exc:
         log.exception("fetch_month_hours failed: %s", exc)
         month_hours = {name: (0.0, 0.0, 0.0) for name in MEMBER_NAMES}
@@ -50,7 +53,7 @@ async def _collect_report_data(
     week_hours: Optional[dict[str, tuple[float, float]]] = None
     if report_date.weekday() == 4:
         try:
-            week_hours = await fetch_week_hours(week_start(report_date))
+            week_hours = await fetch_week_hours(week_start(report_date), members)
         except Exception as exc:
             log.exception("fetch_week_hours failed: %s", exc)
             week_hours = {name: (0.0, 0.0) for name in MEMBER_NAMES}
@@ -112,12 +115,16 @@ async def send_morning_routine(
     today     = datetime.now(UTC2).date()
     yesterday = report_date or previous_workday(today)
 
-    # Fetch data once; all subscribers share the same raw numbers
-    hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(bot, yesterday)
-
     subscribers = get_all_subscribers()
     if not subscribers:
         log.warning("No subscribers found — nobody will receive a morning report.")
+
+    # Fetch data once, scoped to the union of everyone actually tracked, not the whole
+    # roster; all subscribers share these same raw numbers
+    tracked = sorted({m for members in subscribers.values() for m in members}) or None
+    hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(
+        bot, yesterday, tracked
+    )
 
     for user_id, members in subscribers.items():
         await _deliver_report(bot, user_id, yesterday, hours, week_hours, month_hours,
@@ -127,11 +134,13 @@ async def send_morning_routine(
 async def send_reminders(bot: commands.Bot, day: date) -> None:
     """DM everyone (from subscriptions with reminders on) who hasn't posted a report on *day*."""
     links    = get_discord_links()
-    day_offs = await fetch_day_offs(day)
+    sub_ids  = get_reminder_subscribers()
+    tracked  = sorted({m for sub_id in sub_ids for m in get_subscription(sub_id)}) or None
+    day_offs = await fetch_day_offs(day, tracked)
     cache:   dict[int, Optional[set[int]]] = {}
     missing: dict[int, set[int]] = {}          # person's discord id → channels they missed
 
-    for sub_id in get_reminder_subscribers():
+    for sub_id in sub_ids:
         channel_id = get_reports_channel(sub_id)
         if not channel_id:
             continue
@@ -164,16 +173,19 @@ async def send_midday_alert(bot: commands.Bot, day: date) -> None:
     haven't started yet, or Renormalize hasn't synced a day off/sick leave — but it's
     worth a quick check rather than finding out tomorrow morning.
     """
+    subscribers = get_all_subscribers()
+    tracked     = sorted({m for members in subscribers.values() for m in members}) or None
+
     try:
-        hours = await fetch_hours(day)
+        hours = await fetch_hours(day, tracked)
     except Exception as exc:
         log.exception("send_midday_alert: fetch_hours failed: %s", exc)
         return
-    day_offs = await fetch_day_offs(day)
+    day_offs = await fetch_day_offs(day, tracked)
     all_ids  = _all_renormalize_ids()
 
     sent = 0
-    for user_id, members in get_all_subscribers().items():
+    for user_id, members in subscribers.items():
         not_started = [
             m for m in members
             if all_ids.get(m)                      # has an hours target — skip report-only people
@@ -218,11 +230,15 @@ async def check_report_time(bot: commands.Bot) -> None:
     if not user_ids:
         return
 
-    # --- Fetch data once for all subscribers at this time slot ---
-    hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(bot, yesterday)
+    batch   = {user_id: get_subscription(user_id) for user_id in user_ids}
+    tracked = sorted({m for members in batch.values() for m in members}) or None
 
-    for user_id in user_ids:
-        members = get_subscription(user_id)
+    # --- Fetch data once for this batch of subscribers, scoped to who they actually track ---
+    hours, day_offs, week_hours, month_hours, authors = await _collect_report_data(
+        bot, yesterday, tracked
+    )
+
+    for user_id, members in batch.items():
         if members:
             await _deliver_report(
                 bot, user_id, yesterday, hours, week_hours, month_hours, day_offs, members, authors

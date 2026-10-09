@@ -1,12 +1,30 @@
 """Hours data source: the Renormalize API, with a mock fallback."""
 
+import asyncio
 import random
 import time
 from datetime import date, datetime, timedelta
+from typing import Optional
 
 from config import RENORMALIZE_API_KEY, UTC2, log
 from db import _all_members, _all_renormalize_ids
 from utils import workdays_between
+
+# Cap on simultaneous Renormalize API requests — fetch_* functions fire one request per
+# member via asyncio.gather instead of awaiting them one at a time, which is what made a
+# full-roster /report take 30-40s. Capped (not unlimited) to avoid hammering the API.
+_API_CONCURRENCY = 10
+
+
+def _scoped_members(members: Optional[list[str]]) -> list[tuple[str, str, float, float]]:
+    """_all_members(), filtered down to *members* when given — the whole point of passing a
+    filter being to only hit the Renormalize API for people actually needed (e.g. one
+    subscriber's tracked list), instead of the entire ~65-person roster every time."""
+    all_m = _all_members()
+    if members is None:
+        return all_m
+    wanted = set(members)
+    return [m for m in all_m if m[0] in wanted]
 
 # ---------------------------------------------------------------------------
 # Workspace user directory — GET /v1/users (NOT /members, which is 501 Not Implemented).
@@ -65,11 +83,11 @@ def _split_yellow(entries: list[dict]) -> tuple[float, float]:
     return worked, yellow
 
 
-def _mock_hours() -> dict[str, tuple[float, float]]:
+def _mock_hours(members: Optional[list[str]] = None) -> dict[str, tuple[float, float]]:
     """Fallback: random hours near each person's daily target, no yellow time (mock mode
     has no concept of idle/manual entries)."""
     result: dict[str, tuple[float, float]] = {}
-    for name, _en, daily, _ in _all_members():
+    for name, _en, daily, _ in _scoped_members(members):
         if not daily:                       # report-only person
             result[name] = (0.0, 0.0)
             continue
@@ -78,12 +96,17 @@ def _mock_hours() -> dict[str, tuple[float, float]]:
     return result
 
 
-async def fetch_hours(target_date: date) -> dict[str, tuple[float, float]]:
+async def fetch_hours(target_date: date, members: Optional[list[str]] = None) -> dict[str, tuple[float, float]]:
     """
     Return {name: (worked, yellow)} hours worked by each team member on *target_date*.
     yellow is the idle/manually-added subset of worked — see _split_yellow().
 
-    Real data comes from the Renormalize API (api.renormalize.com).
+    Pass *members* to only fetch for those people (e.g. one subscriber's tracked list)
+    instead of the whole roster — much faster for on-demand commands. None (default) means
+    everyone, for batch jobs serving several subscribers at once.
+
+    Real data comes from the Renormalize API (api.renormalize.com), fetched concurrently
+    (one request per member, up to _API_CONCURRENCY at a time).
     Members without a Renormalize ID in RENORMALIZE_IDS fall back to mock data.
     If RENORMALIZE_API_KEY is not set, all members use mock data.
 
@@ -96,9 +119,8 @@ async def fetch_hours(target_date: date) -> dict[str, tuple[float, float]]:
     """
     if not RENORMALIZE_API_KEY:
         log.warning("RENORMALIZE_API_KEY not set — using mock data")
-        return _mock_hours()
+        return _mock_hours(members)
 
-    results:  dict[str, tuple[float, float]] = {}
     date_str  = target_date.isoformat()
     # end_at is EXCLUSIVE in the API — use target_date + 1 to include target_date entries
     end_at    = (target_date + timedelta(days=1)).isoformat()
@@ -106,19 +128,17 @@ async def fetch_hours(target_date: date) -> dict[str, tuple[float, float]]:
     import httpx
 
     all_ids = _all_renormalize_ids()
-    async with httpx.AsyncClient() as client:
-        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+    sem     = asyncio.Semaphore(_API_CONCURRENCY)
 
-        for name, _en, daily, _ in _all_members():
-            renorm_id = all_ids.get(name)
-            if not daily:                   # report-only person
-                results[name] = (0.0, 0.0)
-                continue
-            if renorm_id is None:
-                hours = random.gauss(daily, 1.5)
-                results[name] = (round(max(0.0, min(daily + 2, hours)), 2), 0.0)
-                continue
+    async def _one(client: "httpx.AsyncClient", headers: dict, name: str, daily: float):
+        renorm_id = all_ids.get(name)
+        if not daily:                   # report-only person
+            return name, (0.0, 0.0)
+        if renorm_id is None:
+            hours = random.gauss(daily, 1.5)
+            return name, (round(max(0.0, min(daily + 2, hours)), 2), 0.0)
 
+        async with sem:
             try:
                 resp = await client.get(
                     "https://api.renormalize.com/v1/time/progression",
@@ -134,28 +154,36 @@ async def fetch_hours(target_date: date) -> dict[str, tuple[float, float]]:
                 # Filter by date field (confirmed reliable by testapi)
                 entries = [e for e in resp.json().get(str(renorm_id), []) if e.get("date") == date_str]
                 worked, yellow = _split_yellow(entries)
-                results[name] = (round(worked, 2), round(yellow, 2))
                 log.info("%s on %s: %.2fh (%d entries)", name, date_str, worked, len(entries))
+                return name, (round(worked, 2), round(yellow, 2))
 
             except httpx.HTTPStatusError as exc:
                 log.error("Renormalize %s for %s: %s", exc.response.status_code, name, exc.response.text[:100])
-                results[name] = (0.0, 0.0)
+                return name, (0.0, 0.0)
             except Exception as exc:
                 log.exception("fetch_hours failed for %s: %s", name, exc)
-                results[name] = (0.0, 0.0)
+                return name, (0.0, 0.0)
 
-    return results
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+        pairs = await asyncio.gather(*(
+            _one(client, headers, name, daily)
+            for name, _en, daily, _ in _scoped_members(members)
+        ))
+
+    return dict(pairs)
 
 
-async def fetch_week_hours(week_begin: date) -> dict[str, tuple[float, float]]:
+async def fetch_week_hours(week_begin: date, members: Optional[list[str]] = None) -> dict[str, tuple[float, float]]:
     """
     Return {name: (worked, yellow)} total hours worked per team member for the week starting
-    *week_begin*. Makes 1 API call per member (not 7) for efficiency.
+    *week_begin*. Makes 1 API call per member (not 7), fired concurrently (up to
+    _API_CONCURRENCY at a time). Pass *members* to only fetch for those people.
     """
-    today      = datetime.now(UTC2).date()
-    end        = min(week_begin + timedelta(days=6), today)
-    all_m      = _all_members()
-    all_ids    = _all_renormalize_ids()
+    today  = datetime.now(UTC2).date()
+    end    = min(week_begin + timedelta(days=6), today)
+    all_m  = _scoped_members(members)
+    all_ids = _all_renormalize_ids()
     totals: dict[str, tuple[float, float]] = {m[0]: (0.0, 0.0) for m in all_m}
 
     if not RENORMALIZE_API_KEY:
@@ -164,12 +192,12 @@ async def fetch_week_hours(week_begin: date) -> dict[str, tuple[float, float]]:
         return totals
 
     import httpx
-    async with httpx.AsyncClient() as client:
-        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
-        for name, _en, _, _ in all_m:
-            renorm_id = all_ids.get(name)
-            if renorm_id is None:
-                continue
+    sem = asyncio.Semaphore(_API_CONCURRENCY)
+
+    async def _one(client: "httpx.AsyncClient", headers: dict, name: str, renorm_id: Optional[int]):
+        if renorm_id is None:
+            return None
+        async with sem:
             try:
                 resp = await client.get(
                     "https://api.renormalize.com/v1/time/progression",
@@ -184,25 +212,37 @@ async def fetch_week_hours(week_begin: date) -> dict[str, tuple[float, float]]:
                 resp.raise_for_status()
                 entries = resp.json().get(str(renorm_id), [])
                 worked, yellow = _split_yellow(entries)
-                totals[name] = (round(worked, 2), round(yellow, 2))
+                return name, (round(worked, 2), round(yellow, 2))
             except Exception as exc:
                 log.exception("fetch_week_hours failed for %s: %s", name, exc)
+                return None
+
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+        results = await asyncio.gather(*(
+            _one(client, headers, name, all_ids.get(name)) for name, _en, _, _ in all_m
+        ))
+    totals.update(r for r in results if r is not None)
 
     return totals
 
 
-async def fetch_month_hours(target_date: date) -> dict[str, tuple[float, float, float]]:
+async def fetch_month_hours(
+    target_date: date, members: Optional[list[str]] = None,
+) -> dict[str, tuple[float, float, float]]:
     """
     Return {name: (worked, target, yellow)} from the 1st of *target_date*'s month through
     *target_date* (inclusive). worked is the actual logged hours — no synthetic credit.
     target is daily_rate * workdays elapsed, minus daily_rate for each workday covered by a
     vacation/sick-leave/absence record — the hard cap already accounts for days off, instead
     of inflating worked hours to paper over them. yellow is the idle/manually-added subset of
-    worked — see _split_yellow(). 1 API call per member for hours, plus 1 (cached) for leave.
+    worked — see _split_yellow(). 1 API call per member for hours, plus 1 (cached) for leave,
+    fired concurrently (up to _API_CONCURRENCY at a time). Pass *members* to only fetch for
+    those people.
     """
     month_start = target_date.replace(day=1)
     workdays    = workdays_between(month_start, target_date)
-    all_m       = _all_members()
+    all_m       = _scoped_members(members)
     all_ids     = _all_renormalize_ids()
     totals: dict[str, tuple[float, float, float]] = {m[0]: (0.0, m[2] * workdays, 0.0) for m in all_m}
 
@@ -216,13 +256,14 @@ async def fetch_month_hours(target_date: date) -> dict[str, tuple[float, float, 
         return totals
 
     import httpx
-    async with httpx.AsyncClient() as client:
-        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
-        for name, _en, daily, _ in all_m:
-            renorm_id = all_ids.get(name)
-            if renorm_id is None:
-                continue
-            target = daily * workdays
+    sem = asyncio.Semaphore(_API_CONCURRENCY)
+
+    async def _one(client: "httpx.AsyncClient", headers: dict, name: str, daily: float,
+                    renorm_id: Optional[int]):
+        if renorm_id is None:
+            return None
+        target = daily * workdays
+        async with sem:
             try:
                 resp = await client.get(
                     "https://api.renormalize.com/v1/time/progression",
@@ -242,9 +283,18 @@ async def fetch_month_hours(target_date: date) -> dict[str, tuple[float, float, 
                     leave_days = await _leave_workdays_in_range(renorm_id, month_start, target_date)
                     target    -= daily * leave_days
 
-                totals[name] = (round(worked, 2), round(target, 2), round(yellow, 2))
+                return name, (round(worked, 2), round(target, 2), round(yellow, 2))
             except Exception as exc:
                 log.exception("fetch_month_hours failed for %s: %s", name, exc)
+                return None
+
+    async with httpx.AsyncClient() as client:
+        headers = {"Authorization": f"Bearer {RENORMALIZE_API_KEY}"}
+        results = await asyncio.gather(*(
+            _one(client, headers, name, daily, all_ids.get(name))
+            for name, _en, daily, _ in all_m
+        ))
+    totals.update(r for r in results if r is not None)
 
     return totals
 
@@ -315,19 +365,23 @@ async def _leave_workdays_in_range(renorm_id: int, start: date, end: date) -> in
     return len(covered)
 
 
-async def fetch_day_offs(target_date: date) -> set[str]:
+async def fetch_day_offs(target_date: date, members: Optional[list[str]] = None) -> set[str]:
     """Return display names of everyone on vacation/sick leave/absence in Renormalize on
     *target_date*. Report-only people (no Renormalize ID) are never included — there's no
-    leave data to check for them.
+    leave data to check for them. Pass *members* to only check those people. Fetches each
+    person's (cached) leave record concurrently rather than one at a time.
     """
-    off: set[str] = set()
     all_ids = _all_renormalize_ids()
-    for name, _en, _daily, _weekly in _all_members():
-        renorm_id = all_ids.get(name)
-        if not renorm_id or renorm_id < 0:
-            continue
+    candidates = [
+        (name, all_ids.get(name)) for name, _en, _daily, _weekly in _scoped_members(members)
+        if all_ids.get(name) and all_ids.get(name) > 0
+    ]
+
+    async def _check(name: str, renorm_id: int) -> Optional[str]:
         for start, end in await fetch_leave_records(renorm_id):
             if start <= target_date <= end:
-                off.add(name)
-                break
-    return off
+                return name
+        return None
+
+    results = await asyncio.gather(*(_check(name, rid) for name, rid in candidates))
+    return {name for name in results if name}
