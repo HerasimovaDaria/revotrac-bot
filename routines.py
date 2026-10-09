@@ -24,7 +24,8 @@ from utils import previous_workday, week_start
 async def _collect_report_data(
     bot:         commands.Bot,
     report_date: date,
-) -> tuple[dict[str, float], set[str], Optional[dict[str, float]], dict[str, tuple[float, float]], dict]:
+) -> tuple[dict[str, tuple[float, float]], set[str], Optional[dict[str, tuple[float, float]]],
+           dict[str, tuple[float, float, float]], dict]:
     """Fetch (hours, day_offs, week_hours, month_hours, authors_cache) once for all subscribers.
 
     week_hours is fetched only when *report_date* is Friday (weekly summary day).
@@ -36,7 +37,7 @@ async def _collect_report_data(
         hours = await fetch_hours(report_date)
     except Exception as exc:
         log.exception("fetch_hours failed: %s", exc)
-        hours = {name: 0.0 for name in MEMBER_NAMES}
+        hours = {name: (0.0, 0.0) for name in MEMBER_NAMES}
 
     day_offs = await fetch_day_offs(report_date)
 
@@ -44,15 +45,15 @@ async def _collect_report_data(
         month_hours = await fetch_month_hours(report_date)
     except Exception as exc:
         log.exception("fetch_month_hours failed: %s", exc)
-        month_hours = {name: (0.0, 0.0) for name in MEMBER_NAMES}
+        month_hours = {name: (0.0, 0.0, 0.0) for name in MEMBER_NAMES}
 
-    week_hours: Optional[dict[str, float]] = None
+    week_hours: Optional[dict[str, tuple[float, float]]] = None
     if report_date.weekday() == 4:
         try:
             week_hours = await fetch_week_hours(week_start(report_date))
         except Exception as exc:
             log.exception("fetch_week_hours failed: %s", exc)
-            week_hours = {name: 0.0 for name in MEMBER_NAMES}
+            week_hours = {name: (0.0, 0.0) for name in MEMBER_NAMES}
 
     return hours, day_offs, week_hours, month_hours, {}
 
@@ -61,9 +62,9 @@ async def _build_report_text(
     bot:            commands.Bot,
     user_id:        int,
     report_date:    date,
-    hours:          dict[str, float],
-    week_hours:     Optional[dict[str, float]],
-    month_hours:    dict[str, tuple[float, float]],
+    hours:          dict[str, tuple[float, float]],
+    week_hours:     Optional[dict[str, tuple[float, float]]],
+    month_hours:    dict[str, tuple[float, float, float]],
     day_offs:       set[str],
     filter_members: Optional[list[str]],
     authors_cache:  dict,
@@ -86,9 +87,9 @@ async def _deliver_report(
     bot:            commands.Bot,
     user_id:        int,
     report_date:    date,
-    hours:          dict[str, float],
-    week_hours:     Optional[dict[str, float]],   # None → no weekly section
-    month_hours:    dict[str, tuple[float, float]],
+    hours:          dict[str, tuple[float, float]],
+    week_hours:     Optional[dict[str, tuple[float, float]]],   # None → no weekly section
+    month_hours:    dict[str, tuple[float, float, float]],
     day_offs:       set[str],
     filter_members: Optional[list[str]],
     authors_cache:  dict,                         # {channel_id: authors} shared within one run
@@ -177,7 +178,7 @@ async def send_midday_alert(bot: commands.Bot, day: date) -> None:
             m for m in members
             if all_ids.get(m)                      # has an hours target — skip report-only people
             and m not in day_offs
-            and hours.get(m, 0.0) <= 0.0
+            and hours.get(m, (0.0, 0.0))[0] <= 0.0
         ]
         if not not_started:
             continue

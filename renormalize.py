@@ -55,21 +55,33 @@ async def fetch_all_renormalize_users(force: bool = False) -> list[dict]:
     return users
 
 
-def _mock_hours() -> dict[str, float]:
-    """Fallback: random hours near each person's daily target."""
-    result: dict[str, float] = {}
+def _split_yellow(entries: list[dict]) -> tuple[float, float]:
+    """Return (worked, yellow) hours from a list of time/progression entries. yellow is the
+    subset Renormalize itself flagged "redacted" — idle time (reason="idle") or time added/
+    edited by hand (any other reason text) — as opposed to normal automatic tracking. Always
+    <= worked, since it's a subset, not an addition."""
+    worked = sum(e.get("total_time", 0) for e in entries) / 3600
+    yellow = sum(e.get("total_time", 0) for e in entries if e.get("redacted")) / 3600
+    return worked, yellow
+
+
+def _mock_hours() -> dict[str, tuple[float, float]]:
+    """Fallback: random hours near each person's daily target, no yellow time (mock mode
+    has no concept of idle/manual entries)."""
+    result: dict[str, tuple[float, float]] = {}
     for name, _en, daily, _ in _all_members():
         if not daily:                       # report-only person
-            result[name] = 0.0
+            result[name] = (0.0, 0.0)
             continue
         hours = random.gauss(daily, 1.5)
-        result[name] = round(max(0.0, min(daily + 2, hours)), 2)
+        result[name] = (round(max(0.0, min(daily + 2, hours)), 2), 0.0)
     return result
 
 
-async def fetch_hours(target_date: date) -> dict[str, float]:
+async def fetch_hours(target_date: date) -> dict[str, tuple[float, float]]:
     """
-    Return hours worked by each team member on *target_date*.
+    Return {name: (worked, yellow)} hours worked by each team member on *target_date*.
+    yellow is the idle/manually-added subset of worked — see _split_yellow().
 
     Real data comes from the Renormalize API (api.renormalize.com).
     Members without a Renormalize ID in RENORMALIZE_IDS fall back to mock data.
@@ -86,7 +98,7 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
         log.warning("RENORMALIZE_API_KEY not set — using mock data")
         return _mock_hours()
 
-    results:  dict[str, float] = {}
+    results:  dict[str, tuple[float, float]] = {}
     date_str  = target_date.isoformat()
     # end_at is EXCLUSIVE in the API — use target_date + 1 to include target_date entries
     end_at    = (target_date + timedelta(days=1)).isoformat()
@@ -100,11 +112,11 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
         for name, _en, daily, _ in _all_members():
             renorm_id = all_ids.get(name)
             if not daily:                   # report-only person
-                results[name] = 0.0
+                results[name] = (0.0, 0.0)
                 continue
             if renorm_id is None:
                 hours = random.gauss(daily, 1.5)
-                results[name] = round(max(0.0, min(daily + 2, hours)), 2)
+                results[name] = (round(max(0.0, min(daily + 2, hours)), 2), 0.0)
                 continue
 
             try:
@@ -119,48 +131,36 @@ async def fetch_hours(target_date: date) -> dict[str, float]:
                     timeout=15,
                 )
                 resp.raise_for_status()
-                entries = resp.json().get(str(renorm_id), [])
                 # Filter by date field (confirmed reliable by testapi)
-                total_sec = sum(
-                    e.get("total_time", 0)
-                    for e in entries
-                    if e.get("date") == date_str
-                )
-                results[name] = round(total_sec / 3600, 2)
-                log.info("%s on %s: %.2fh (%d entries)", name, date_str, results[name], len(entries))
+                entries = [e for e in resp.json().get(str(renorm_id), []) if e.get("date") == date_str]
+                worked, yellow = _split_yellow(entries)
+                results[name] = (round(worked, 2), round(yellow, 2))
+                log.info("%s on %s: %.2fh (%d entries)", name, date_str, worked, len(entries))
 
             except httpx.HTTPStatusError as exc:
                 log.error("Renormalize %s for %s: %s", exc.response.status_code, name, exc.response.text[:100])
-                results[name] = 0.0
+                results[name] = (0.0, 0.0)
             except Exception as exc:
                 log.exception("fetch_hours failed for %s: %s", name, exc)
-                results[name] = 0.0
+                results[name] = (0.0, 0.0)
 
     return results
 
 
-def _sum_entries(data: dict, user_id: int) -> float:
-    """Sum all total_time seconds for a user in the API response (no date filter)."""
-    return float(sum(
-        e.get("total_time", 0)
-        for e in data.get(str(user_id), [])
-    ))
-
-
-async def fetch_week_hours(week_begin: date) -> dict[str, float]:
+async def fetch_week_hours(week_begin: date) -> dict[str, tuple[float, float]]:
     """
-    Return total hours worked per team member for the week starting *week_begin*.
-    Makes 1 API call per member (not 7) for efficiency.
+    Return {name: (worked, yellow)} total hours worked per team member for the week starting
+    *week_begin*. Makes 1 API call per member (not 7) for efficiency.
     """
     today      = datetime.now(UTC2).date()
     end        = min(week_begin + timedelta(days=6), today)
     all_m      = _all_members()
     all_ids    = _all_renormalize_ids()
-    totals: dict[str, float] = {m[0]: 0.0 for m in all_m}
+    totals: dict[str, tuple[float, float]] = {m[0]: (0.0, 0.0) for m in all_m}
 
     if not RENORMALIZE_API_KEY:
         for name, _en, daily, weekly in all_m:
-            totals[name] = round(random.gauss(weekly * 0.85, weekly * 0.1), 2)
+            totals[name] = (round(random.gauss(weekly * 0.85, weekly * 0.1), 2), 0.0)
         return totals
 
     import httpx
@@ -183,28 +183,28 @@ async def fetch_week_hours(week_begin: date) -> dict[str, float]:
                 )
                 resp.raise_for_status()
                 entries = resp.json().get(str(renorm_id), [])
-                total_sec = sum(e.get("total_time", 0) for e in entries)
-                totals[name] = round(total_sec / 3600, 2)
+                worked, yellow = _split_yellow(entries)
+                totals[name] = (round(worked, 2), round(yellow, 2))
             except Exception as exc:
                 log.exception("fetch_week_hours failed for %s: %s", name, exc)
 
     return totals
 
 
-async def fetch_month_hours(target_date: date) -> dict[str, tuple[float, float]]:
+async def fetch_month_hours(target_date: date) -> dict[str, tuple[float, float, float]]:
     """
-    Return {name: (worked, target)} from the 1st of *target_date*'s month through
+    Return {name: (worked, target, yellow)} from the 1st of *target_date*'s month through
     *target_date* (inclusive). worked is the actual logged hours — no synthetic credit.
     target is daily_rate * workdays elapsed, minus daily_rate for each workday covered by a
     vacation/sick-leave/absence record — the hard cap already accounts for days off, instead
-    of inflating worked hours to paper over them. 1 API call per member for hours, plus 1
-    (cached) for their leave record.
+    of inflating worked hours to paper over them. yellow is the idle/manually-added subset of
+    worked — see _split_yellow(). 1 API call per member for hours, plus 1 (cached) for leave.
     """
     month_start = target_date.replace(day=1)
     workdays    = workdays_between(month_start, target_date)
     all_m       = _all_members()
     all_ids     = _all_renormalize_ids()
-    totals: dict[str, tuple[float, float]] = {m[0]: (0.0, m[2] * workdays) for m in all_m}
+    totals: dict[str, tuple[float, float, float]] = {m[0]: (0.0, m[2] * workdays, 0.0) for m in all_m}
 
     if not RENORMALIZE_API_KEY:
         for name, _en, daily, _ in all_m:
@@ -212,7 +212,7 @@ async def fetch_month_hours(target_date: date) -> dict[str, tuple[float, float]]
                 continue
             target = daily * workdays
             worked = round(random.gauss(target * 0.85, target * 0.1 or 1), 2)
-            totals[name] = (worked, target)
+            totals[name] = (worked, target, 0.0)
         return totals
 
     import httpx
@@ -236,14 +236,13 @@ async def fetch_month_hours(target_date: date) -> dict[str, tuple[float, float]]
                 )
                 resp.raise_for_status()
                 entries = resp.json().get(str(renorm_id), [])
-                total_sec = sum(e.get("total_time", 0) for e in entries)
-                worked    = total_sec / 3600
+                worked, yellow = _split_yellow(entries)
 
                 if daily and renorm_id > 0:
                     leave_days = await _leave_workdays_in_range(renorm_id, month_start, target_date)
                     target    -= daily * leave_days
 
-                totals[name] = (round(worked, 2), round(target, 2))
+                totals[name] = (round(worked, 2), round(target, 2), round(yellow, 2))
             except Exception as exc:
                 log.exception("fetch_month_hours failed for %s: %s", name, exc)
 

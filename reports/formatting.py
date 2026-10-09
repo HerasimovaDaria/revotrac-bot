@@ -16,6 +16,15 @@ def status_emoji(worked: float, target: float, day_off: bool) -> str:
     return "✅"
 
 
+YELLOW_THRESHOLD = 2.0   # hours of idle/manually-added time that flags someone on their own,
+                         # even if their actual worked hours are otherwise on target
+
+
+def _yellow_suffix(yellow: float) -> str:
+    """' · 3.0h idle/manual', or '' if not worth mentioning."""
+    return f" · {_h(yellow)}h idle/manual" if yellow > 0.05 else ""
+
+
 MONTHS   = ["January", "February", "March", "April", "May", "June", "July",
             "August", "September", "October", "November", "December"]
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -33,15 +42,16 @@ def _day_title(d: date) -> str:
 
 def format_daily_report(
     report_date:    date,
-    hours:          dict[str, float],
+    hours:          dict[str, tuple[float, float]],   # name -> (worked, yellow)
     day_offs:       set[str],
     filter_members: Optional[list[str]] = None,   # None → all members
     report_authors: Optional[set[int]] = None,    # None → report check disabled
-    month_hours:    Optional[dict[str, tuple[float, float]]] = None,   # name -> (worked, target); None → skip
+    month_hours:    Optional[dict[str, tuple[float, float, float]]] = None,  # name -> (worked, target, yellow)
 ) -> str:
     """Show members more than 2h behind today, more than 3h over target today (overtime,
-    listed separately under "OverTimes:"), or missing a daily report — everyone else is
-    folded into the "no issues" summary line."""
+    listed separately under "OverTimes:"), missing a daily report, or with more than
+    YELLOW_THRESHOLD hours of idle/manually-added time today — everyone else is folded into
+    the "no issues" summary line."""
     header = f"### {_day_title(report_date)}\n"
 
     active = [(n, d, w) for n, _en, d, w in _all_members()
@@ -55,7 +65,7 @@ def format_daily_report(
     for name, daily, _ in active:
         if name in day_offs:
             continue                      # day off is not a problem
-        worked    = hours.get(name, 0.0)
+        worked, yellow = hours.get(name, (0.0, 0.0))
         emoji     = status_emoji(worked, daily, False)
         uid       = links.get(name)
         no_report = report_authors is not None and uid is not None and uid not in report_authors
@@ -65,14 +75,16 @@ def format_daily_report(
             if no_report:
                 behind.append(f"🟡 **{name}** · no report")
             continue
-        if emoji == "✅" and not no_report:
+        flagged_yellow = yellow > YELLOW_THRESHOLD
+        if emoji == "✅" and not no_report and not flagged_yellow:
             continue
-        marker = "🟡" if emoji == "✅" else emoji   # ✅-but-no-report still needs a flag
+        marker = "🟡" if emoji == "✅" else emoji   # ✅-but-flagged still needs a flag
         line   = f"{marker} **{name}** · {_h(worked)} of {daily:g}h today"
         if emoji == "🔵":
             line += " · over target today"
+        line += _yellow_suffix(yellow)
         if month_hours is not None:
-            done, target = month_hours.get(name, (0.0, 0.0))
+            done, target, _month_yellow = month_hours.get(name, (0.0, 0.0, 0.0))
             delta = done - target
             if abs(delta) > 1:
                 line += f" · {delta:+.1f}h, {_h(done)}/{_h(target)}h this month"
@@ -102,14 +114,16 @@ def format_daily_report(
 
 def format_weekly_report(
     week_begin:     date,
-    week_hours:     dict[str, float],
+    week_hours:     dict[str, tuple[float, float]],   # name -> (worked, yellow)
     filter_members: Optional[list[str]] = None,   # None → all members
     today:          Optional[date] = None,        # None → week_begin (i.e. no days elapsed yet)
 ) -> str:
     """Progress toward the weekly target for everyone — not filtered to problems like the
     daily/monthly reports. The status circle compares done against a *prorated* target
     (daily rate × workdays elapsed in the week so far), not the full weekly target — early
-    in the week nobody's done the full target yet, so that comparison would be meaningless."""
+    in the week nobody's done the full target yet, so that comparison would be meaningless.
+    More than YELLOW_THRESHOLD hours of idle/manually-added time this week also downgrades
+    an otherwise-✅ circle to 🟡."""
     header = f"### Week of {MONTHS[week_begin.month - 1]} {week_begin.day}\n"
     today  = today or week_begin
     week_workdays_so_far = workdays_between(week_begin, min(today, week_begin + timedelta(days=6)))
@@ -121,14 +135,22 @@ def format_weekly_report(
     for name, daily, weekly in active:
         if not weekly:                    # report-only person
             continue
-        done       = week_hours.get(name, 0.0)
+        done, yellow = week_hours.get(name, (0.0, 0.0))
         remaining  = max(weekly - done, 0.0)
         pct        = int(min(done / weekly, 1.0) * 100) if weekly else 0
         tail       = f"{_h(remaining)}h left" if remaining > 0 else "target reached"
         prorated   = daily * week_workdays_so_far
         week_delta = done - prorated
-        marker     = "🔴" if week_delta < -1 else "🔵" if week_delta > 1 else "✅"
-        lines.append(f"{marker} **{name}** · {_h(done)} of {weekly:g}h · {pct}%\n-# {tail}")
+        if week_delta < -1:
+            marker = "🔴"
+        elif week_delta > 1:
+            marker = "🔵"
+        elif yellow > YELLOW_THRESHOLD:
+            marker = "🟡"
+        else:
+            marker = "✅"
+        line = f"{marker} **{name}** · {_h(done)} of {weekly:g}h · {pct}%" + _yellow_suffix(yellow)
+        lines.append(f"{line}\n-# {tail}")
 
     if not lines:
         return ""
@@ -137,10 +159,12 @@ def format_weekly_report(
 
 def format_monthly_report(
     report_date:    date,
-    month_hours:    dict[str, tuple[float, float]],   # name -> (worked, target)
+    month_hours:    dict[str, tuple[float, float, float]],   # name -> (worked, target, yellow)
     filter_members: Optional[list[str]] = None,   # None → all members
 ) -> str:
-    """Month-to-date shortfall, people who are behind only — everyone else is omitted."""
+    """Month-to-date shortfall, people who are behind only, plus anyone with more than
+    YELLOW_THRESHOLD hours of idle/manually-added time this month even if their hours are
+    otherwise on target — everyone else is omitted."""
     workdays = workdays_between(report_date.replace(day=1), report_date)
     header   = f"### {MONTHS[report_date.month - 1]} — {workdays} workdays so far\n"
 
@@ -151,12 +175,16 @@ def format_monthly_report(
     for name, daily, _ in active:
         if not daily:                     # report-only person
             continue
-        done, target = month_hours.get(name, (0.0, 0.0))
-        delta = done - target
-        if delta >= -1:
+        done, target, yellow = month_hours.get(name, (0.0, 0.0, 0.0))
+        delta  = done - target
+        behind = delta < -1
+        if not behind and yellow <= YELLOW_THRESHOLD:
             continue
-        pct = int(min(done / target, 1.0) * 100) if target else 0
-        lines.append(f"🔴 **{name}** · {_h(done)} of {_h(target)}h · {pct}%\n-# {_h(-delta)}h behind")
+        pct   = int(min(done / target, 1.0) * 100) if target else 0
+        emoji = "🔴" if behind else "🟡"
+        tail  = f"{_h(-delta)}h behind" if behind else "on track"
+        line  = f"{emoji} **{name}** · {_h(done)} of {_h(target)}h · {pct}%" + _yellow_suffix(yellow)
+        lines.append(f"{line}\n-# {tail}")
 
     if not lines:
         return "✅ Everyone's on track this month."
