@@ -17,6 +17,11 @@ record — a heads-up, not necessarily a problem.
 Evening reminder (REMINDER_TIME, default 19:00 UTC+2, Mon–Fri): for subscribers who ran
 !reminders on, everyone in their subscription without a report today gets a DM.
 
+Cache warm-up (CACHE_WARM_TIME, default 01:00 UTC+2, Mon–Fri): pre-fetches this month's
+low-activity screenshot data (renormalize.fetch_low_activity) for the whole roster, so
+/report, /weekly and /monthly never pay the cold-cache cost when someone actually asks —
+no DM sent, this is purely background cache population.
+
 Commands (also available as slash commands with autocomplete: /track, /report, …):
   !track <name>           — add one person to your subscription (searchable)
   !tracklist              — show who's in your subscription

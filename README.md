@@ -51,7 +51,9 @@ Sent on workdays at the time each subscriber picked with `/settime` (default 09:
    not its own trigger, and it only covers people with real tracker activity: manually-added
    time has no screenshots at all, so it never shows up here. Past days are cached in the
    database (a day's screenshots don't change retroactively) — only today, and days never
-   queried before, actually hit the API.
+   queried before, actually hit the API. A cold cache for a large tracked list over a
+   multi-week month can take many minutes to fetch (hundreds of per-day, per-person
+   requests) — see **Cache warm-up** below for how this is avoided in practice.
 5. **Daily report check.** The bot reads the subscriber's reports channel for that day (00:00–23:59 UTC+2):
    - any message from the person themselves counts;
    - if another bot posted the report (e.g. a "Daily Reports" bot), the author is read from an embed field named `Developer`/`Author`/`User` (or their Russian equivalents, for reports already posted that way) — if a `Date` field names a different day, it doesn't count;
@@ -86,6 +88,15 @@ A subscriber turns them on with `/reminders on`. On workdays at `REMINDER_TIME` 
 19:00 UTC+2), the bot checks that subscriber's reports channel for **today**. Everyone in
 their subscription without a report gets a DM. People on vacation/sick leave/absence that
 day are skipped. Someone in several subscriptions still gets just one message.
+
+### Cache warm-up
+
+On workdays at `CACHE_WARM_TIME` (default 01:00 UTC+2) the bot pre-fetches this month's
+low-activity data (see **Low activity** above) for the *whole roster* — no DM, purely
+background cache population. Runs well before anyone's morning report, so `/report`,
+`/weekly` and `/monthly` are always reading from a warm per-day cache instead of hitting
+the Renormalize screenshots API on demand. Added after an incident (2026-10-12) where a cold-cache `/report` for a large tracked list
+took 20+ minutes before the reply even went out.
 
 ### Access control
 
@@ -197,6 +208,7 @@ server, a `/` reply is only visible to you; a `!` reply comes as a DM.
 | `DB_PATH` | no | SQLite file path, defaults to `hours.db` |
 | `REMINDER_TIME` | no | Evening reminder time `HH:MM` (UTC+2), defaults to `19:00` |
 | `MIDDAY_CHECK_TIME` | no | "Hasn't started work" alert time `HH:MM` (UTC+2), defaults to `13:00` |
+| `CACHE_WARM_TIME` | no | Low-activity cache warm-up time `HH:MM` (UTC+2), defaults to `01:00` |
 
 See `.env.example` for a template.
 
