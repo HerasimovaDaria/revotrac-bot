@@ -31,6 +31,12 @@ DB_PATH = os.getenv("DB_PATH") or "hours.db"   # on Railway point it to the Volu
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
+# httpx/httpcore log every single HTTP request at INFO ("HTTP Request: GET ... 200 OK") —
+# with the volume of Renormalize calls this bot makes, that drowns out our own log lines.
+# Quiet them to WARNING; real connection/HTTP errors still surface.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # ---------------------------------------------------------------------------
 # Team roster
 # ---------------------------------------------------------------------------
