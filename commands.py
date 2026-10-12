@@ -52,12 +52,42 @@ from utils import _find_member, _resolve_discord_user, previous_workday, week_st
 # Hybrid commands work both as "!cmd" and as "/cmd" (slash, with autocomplete in Discord).
 # Slash calls have no real message to react to, so replies go through these helpers.
 
+_REPLY_CHUNK_LIMIT = 1900   # Discord's hard cap on message content is 2000
+
+
+def _chunk_text(text: str, limit: int = _REPLY_CHUNK_LIMIT) -> list[str]:
+    """Split text into <=limit chunks, breaking on newlines so a line never gets cut
+    mid-word. A report with enough flagged people can exceed Discord's 2000-char cap —
+    sending it unchunked raises HTTPException (400, "Must be 2000 or fewer in length")
+    and the command fails with no reply at all."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in text.split("\n"):
+        add_len = len(line) + (1 if current else 0)   # +1 for the joining newline
+        if current and current_len + add_len > limit:
+            chunks.append("\n".join(current))
+            current, current_len = [], 0
+            add_len = len(line)
+        current.append(line)
+        current_len += add_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 async def _reply(ctx: commands.Context, content: str, **kwargs) -> None:
-    """Slash → answer in place (only you see it on servers). Prefix → DM (+📨 on servers)."""
+    """Slash → answer in place (only you see it on servers). Prefix → DM (+📨 on servers).
+    Splits content over Discord's 2000-char message limit into multiple sends."""
+    parts = _chunk_text(content)
     if ctx.interaction:
-        await ctx.send(content, ephemeral=ctx.guild is not None, **kwargs)
+        for part in parts:
+            await ctx.send(part, ephemeral=ctx.guild is not None, **kwargs)
     else:
-        await ctx.author.send(content, **kwargs)
+        for part in parts:
+            await ctx.author.send(part, **kwargs)
         if ctx.guild:
             await ctx.message.add_reaction("📨")
 

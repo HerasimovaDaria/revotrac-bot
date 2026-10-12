@@ -20,12 +20,22 @@ REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID") or 0)
 REMINDER_HOUR, REMINDER_MINUTE = (int(x) for x in (os.getenv("REMINDER_TIME") or "19:00").split(":"))
 # "Hasn't started work yet" alert, HH:MM UTC+2 — checks for 0 hours logged and no day off
 MIDDAY_HOUR, MIDDAY_MINUTE     = (int(x) for x in (os.getenv("MIDDAY_CHECK_TIME") or "13:00").split(":"))
+# Daily low-activity cache warm-up, HH:MM UTC+2 — pre-fetches the whole roster's
+# screenshot-based low-activity data (renormalize.fetch_low_activity) once a day, well
+# before anyone's morning report, so /report never pays the cold-cache cost on demand.
+CACHE_WARM_HOUR, CACHE_WARM_MINUTE = (int(x) for x in (os.getenv("CACHE_WARM_TIME") or "01:00").split(":"))
 
 UTC2    = timezone(timedelta(hours=2))   # fixed offset — every user-facing time is "UTC+2"
 DB_PATH = os.getenv("DB_PATH") or "hours.db"   # on Railway point it to the Volume, e.g. /data/hours.db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+# httpx/httpcore log every single HTTP request at INFO ("HTTP Request: GET ... 200 OK") —
+# with the volume of Renormalize calls this bot makes, that drowns out our own log lines.
+# Quiet them to WARNING; real connection/HTTP errors still surface.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # ---------------------------------------------------------------------------
 # Team roster

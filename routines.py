@@ -1,11 +1,22 @@
 """Core routine: collecting data, building/delivering reports, scheduled checks."""
 
+import time
 from datetime import date, datetime
 from typing import Optional
 
 from discord.ext import commands
 
-from config import MEMBER_NAMES, MIDDAY_HOUR, MIDDAY_MINUTE, REMINDER_HOUR, REMINDER_MINUTE, UTC2, log
+from config import (
+    CACHE_WARM_HOUR,
+    CACHE_WARM_MINUTE,
+    MEMBER_NAMES,
+    MIDDAY_HOUR,
+    MIDDAY_MINUTE,
+    REMINDER_HOUR,
+    REMINDER_MINUTE,
+    UTC2,
+    log,
+)
 from db import (
     _all_renormalize_ids,
     get_all_subscribers,
@@ -228,6 +239,25 @@ async def send_midday_alert(bot: commands.Bot, day: date) -> None:
     log.info("Midday alert for %s: sent to %d subscribers", day, sent)
 
 
+async def warm_low_activity_cache(report_date: date) -> None:
+    """Pre-fetch this month's low-activity data for the whole roster, once a day, well
+    before anyone's morning report fires. Without this, the first /report (or the morning
+    routine) of the day pays the full cold-cache cost on demand — measured at 20+ minutes
+    for a large tracked list on an uncached month (2026-10-12 incident: cmd_report crashed
+    twice after that wait, see reports/formatting's 2000-char fix in the same release)."""
+    month_start = report_date.replace(day=1)
+    t0 = time.monotonic()
+    try:
+        await fetch_low_activity(month_start, report_date)   # members=None → whole roster
+    except Exception as exc:
+        log.exception("warm_low_activity_cache failed: %s", exc)
+        return
+    log.info(
+        "warm_low_activity_cache: warmed %s through %s in %.1fs",
+        month_start, report_date, time.monotonic() - t0,
+    )
+
+
 async def check_report_time(bot: commands.Bot) -> None:
     """
     Called every minute by the scheduler.
@@ -245,6 +275,9 @@ async def check_report_time(bot: commands.Bot) -> None:
 
     if (h, m) == (MIDDAY_HOUR, MIDDAY_MINUTE):
         await send_midday_alert(bot, today)
+
+    if (h, m) == (CACHE_WARM_HOUR, CACHE_WARM_MINUTE):
+        await warm_low_activity_cache(yesterday)
 
     user_ids = get_users_for_time(h, m)
     if not user_ids:

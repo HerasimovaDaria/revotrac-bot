@@ -285,8 +285,10 @@ async def fetch_month_hours(
                 worked, yellow = _split_yellow(entries)
 
                 if daily and renorm_id > 0:
-                    leave_days = await _leave_workdays_in_range(renorm_id, month_start, target_date)
-                    target    -= daily * leave_days
+                    leave_days = await _leave_workdays_in_range(
+                        renorm_id, month_start, target_date, client=client,
+                    )
+                    target -= daily * leave_days
 
                 return name, (round(worked, 2), round(target, 2), round(yellow, 2))
             except Exception as exc:
@@ -316,9 +318,16 @@ _LEAVE_CACHE_TTL = 1800   # seconds
 _leave_cache: dict[int, dict] = {}   # renorm_id -> {"data": [(start, end), ...], "ts": float}
 
 
-async def fetch_leave_records(renorm_id: int, force: bool = False) -> list[tuple[date, date]]:
+async def fetch_leave_records(
+    renorm_id: int, force: bool = False, client: Optional["httpx.AsyncClient"] = None,
+) -> list[tuple[date, date]]:
     """Return [(start_date, end_date), ...] for every leave record of this Renormalize user,
     past and future. Cached per ID for _LEAVE_CACHE_TTL seconds.
+
+    Pass an existing *client* when calling this for many people in the same batch (e.g. from
+    fetch_day_offs/fetch_month_hours) — each httpx.AsyncClient() opens its own connection
+    pool, so reusing one across a batch avoids paying that setup cost per person. Opens its
+    own (short-lived) client when called standalone.
     """
     now    = time.monotonic()
     cached = _leave_cache.get(renorm_id)
@@ -329,16 +338,22 @@ async def fetch_leave_records(renorm_id: int, force: bool = False) -> list[tuple
 
     import httpx
 
+    async def _get(c: "httpx.AsyncClient"):
+        resp = await c.get(
+            "https://api.renormalize.com/v1/vacations",
+            params={"user_id": str(renorm_id)},
+            headers={"Authorization": f"Bearer {RENORMALIZE_API_KEY}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                "https://api.renormalize.com/v1/vacations",
-                params={"user_id": str(renorm_id)},
-                headers={"Authorization": f"Bearer {RENORMALIZE_API_KEY}"},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            raw = resp.json()
+        if client is not None:
+            raw = await _get(client)
+        else:
+            async with httpx.AsyncClient() as own_client:
+                raw = await _get(own_client)
     except Exception as exc:
         log.warning("fetch_leave_records failed for %s: %s", renorm_id, exc)
         return cached["data"] if cached else []
@@ -356,9 +371,11 @@ async def fetch_leave_records(renorm_id: int, force: bool = False) -> list[tuple
     return records
 
 
-async def _leave_workdays_in_range(renorm_id: int, start: date, end: date) -> int:
+async def _leave_workdays_in_range(
+    renorm_id: int, start: date, end: date, client: Optional["httpx.AsyncClient"] = None,
+) -> int:
     """Count distinct Mon–Fri days in [start, end] covered by any leave record (any type)."""
-    records = await fetch_leave_records(renorm_id)
+    records = await fetch_leave_records(renorm_id, client=client)
     covered: set[date] = set()
     for rec_start, rec_end in records:
         lo, hi = max(rec_start, start), min(rec_end, end)
@@ -374,21 +391,27 @@ async def fetch_day_offs(target_date: date, members: Optional[list[str]] = None)
     """Return display names of everyone on vacation/sick leave/absence in Renormalize on
     *target_date*. Report-only people (no Renormalize ID) are never included — there's no
     leave data to check for them. Pass *members* to only check those people. Fetches each
-    person's (cached) leave record concurrently rather than one at a time.
+    person's (cached) leave record concurrently, sharing one HTTP client across the batch
+    rather than one at a time.
     """
     all_ids = _all_renormalize_ids()
     candidates = [
         (name, all_ids.get(name)) for name, _en, _daily, _weekly in _scoped_members(members)
         if all_ids.get(name) and all_ids.get(name) > 0
     ]
+    if not candidates:
+        return set()
 
-    async def _check(name: str, renorm_id: int) -> Optional[str]:
-        for start, end in await fetch_leave_records(renorm_id):
+    import httpx
+
+    async def _check(client: httpx.AsyncClient, name: str, renorm_id: int) -> Optional[str]:
+        for start, end in await fetch_leave_records(renorm_id, client=client):
             if start <= target_date <= end:
                 return name
         return None
 
-    results = await asyncio.gather(*(_check(name, rid) for name, rid in candidates))
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(*(_check(client, name, rid) for name, rid in candidates))
     return {name for name in results if name}
 
 
@@ -405,8 +428,12 @@ async def fetch_day_offs(target_date: date, members: Optional[list[str]] = None)
 
 async def _fetch_screenshots(
     client: "object", headers: dict, renorm_id: int, frm: date, to: date,
-) -> list[dict]:
-    """All screenshots for renorm_id in [frm, to) — paginated, 100 per page (API max)."""
+) -> Optional[list[dict]]:
+    """All screenshots for renorm_id in [frm, to) — paginated, 100 per page (API max).
+    Returns None on any failure (401/500/timeout, all observed under load against the real
+    roster) rather than whatever partial list had been collected — a transient failure must
+    never look the same as "this person genuinely has 0 screenshots" to the caller, since
+    that distinction is what decides whether _day() is allowed to cache the result."""
     shots: list[dict] = []
     page = 1
     while True:
@@ -426,8 +453,8 @@ async def _fetch_screenshots(
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            log.exception("fetch_low_activity: screenshots failed for %s: %s", renorm_id, exc)
-            break
+            log.warning("fetch_low_activity: screenshots failed for %s (page %d): %s", renorm_id, page, exc)
+            return None
         shots.extend(data.get("screenshots", []))
         pagination = data.get("pagination", {})
         if page >= pagination.get("total_pages", 1):
@@ -466,6 +493,11 @@ async def fetch_low_activity(
                 return cached
         async with sem:
             shots = await _fetch_screenshots(client, headers, renorm_id, day, day + timedelta(days=1))
+        if shots is None:
+            # Fetch failed — report 0 for this call, but don't cache it: a cached (0, 0)
+            # would look identical to "genuinely no screenshots" forever. Leaving the cache
+            # row absent means the next call for this day (e.g. tomorrow's warm-up) retries.
+            return 0.0, 0.0
         total = sum(s.get("duration", 0) for s in shots)
         low   = sum(
             s.get("duration", 0) for s in shots
